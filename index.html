@@ -453,6 +453,16 @@
     var p = parts(f.date), t0 = Date.now();
     $('btnSave').disabled = true;
     try {
+      // 二重登録の確認（ファイルを保存する前に行う）
+      var dups = await findDuplicates(f, p, ledgerParent.id);
+      if (dups.length) {
+        log('重複チェック', null, '立替日と金額が同じ申請が台帳に ' + dups.length + ' 件あった（' + dups.map(function (d) { return d.line + '行目'; }).join('・') + '）');
+        var msg = '同じ立替日・金額の申請が、台帳に既にあります。\n\n' +
+          dups.map(function (d) { return '・' + d.line + '行目：' + d.r[2] + '／' + d.r[5] + '／' + yen(String(d.r[8]).replace(/,/g, '')) + '円（' + (d.r[COL.status] || '') + '）'; }).join('\n') +
+          '\n\n同じ領収書を2回送っていないか確認してください。\n別の支払いなら「OK」、取りやめるなら「キャンセル」を押してください。';
+        if (!confirm(msg)) { log('重複チェック', true, '保存を取りやめた（二重登録を防いだ）'); $('btnSave').disabled = false; return; }
+        log('重複チェック', null, '確認のうえ、別の支払いとして保存を続けた');
+      } else log('重複チェック', true, '立替日と金額が同じ申請はなかった');
       // 稼働フォルダ
       var month = monthFolder;
       if (!month) {
@@ -491,6 +501,17 @@
   };
 
   function sheetsUrl(path) { return 'https://sheets.googleapis.com/v4/spreadsheets/' + path; }
+  /** 台帳から「立替日＋金額」が同じ行を探す。利用会社はAIの書き方が毎回ゆれる（例：ファミリーマート／FamilyMart ○○店）ので判定に使わない（10/5 試験） */
+  async function findDuplicates(f, p, parentId) {
+    var title = '立替金精算台帳_' + p.y, tab = p.y + '-' + ('0' + p.m).slice(-2);
+    var list = await listChildren(parentId, "mimeType='application/vnd.google-apps.spreadsheet' and name='" + qName(title) + "'");
+    if (!list.length) return [];
+    var cur;
+    try { cur = await gfetch(sheetsUrl(list[0].id + '/values/' + encodeURIComponent("'" + tab + "'!A2:Q"))); } catch (e) { return []; }   // その月のシートがまだ無い
+    return (cur.values || []).map(function (r, i) { return { r: r, line: i + 2 }; }).filter(function (x) {
+      return x.r[2] === f.date && String(x.r[8]).replace(/,/g, '') === String(f.amount);
+    });
+  }
   /** 申請状態（L列）をプルダウンに、申請文（N列）を折り返し表示にする。毎回かけ直しても同じ結果になる。
    *  v1（10/5）でシートが既にあるとプルダウンが付かなかったため、作成時だけでなく保存のたびに行う */
   async function ensureFormat(ssId, sheetId) {
@@ -536,8 +557,6 @@
     await ensureFormat(ssId, sheetId);
     var cur = await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A2:Q")));
     var rows = cur.values || [];
-    var dup = rows.filter(function (r) { return r[2] === f.date && r[5] === f.vendor && String(r[8]) === String(f.amount); }).length;
-    if (dup) log('台帳 重複チェック', null, '同じ「立替日＋利用会社＋金額」が既に ' + dup + ' 行ある（本番では送信前に警告する）');
     var prefix = p.ymd + '-' + email.split('@')[0] + '-';
     var seq = rows.filter(function (r) { return String(r[0] || '').indexOf(prefix) === 0; }).length + 1;
     var ai = chosen.ai || {}, edited = ai.date !== f.date || ai.amount !== String(f.amount) || ai.vendor !== f.vendor;
