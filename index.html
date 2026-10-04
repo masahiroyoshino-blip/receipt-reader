@@ -207,7 +207,8 @@
     }).catch(function (e) { log('ログイン', false, errText(e)); });
   };
 
-  function api(action, payload) {
+  /** 通信そのものの失敗（Failed to fetch／返事が読めない）は、3秒あけて1回だけやり直す（議事録アプリ v1.0.3 と同じ対策） */
+  function api(action, payload, retried) {
     var t0 = Date.now();
     var body = JSON.stringify(Object.assign({ action: action, session: session }, payload || {}));
     return fetch(cfg.apiUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, redirect: 'follow' })
@@ -215,6 +216,11 @@
       .then(function (t) {
         var j; try { j = JSON.parse(t); } catch (e) { throw new Error('裏側APIの返事を読めません（公開設定が「全員」か確認）: ' + t.slice(0, 120)); }
         j.roundTripMs = Date.now() - t0; return j;
+      })
+      .catch(function (e) {
+        if (retried || action === 'login') throw e;
+        log('通信のやり直し', null, action + '：' + errText(e) + ' → 3秒後にもう1回');
+        return sleep(3000).then(function () { return api(action, payload, true); });
       });
   }
 
@@ -277,7 +283,11 @@
           log('R' + no + ' 読み取り ' + r.model, true, '往復 ' + sec(r.roundTripMs) + '／種類 ' + x.docType + '／枚数 ' + x.receiptCount + '／日付 ' + (x.date || '空') + '／会社 ' + (x.vendor || '空') + '／金額 ' + (x.amount === '' ? '空' : x.amount) + '／支払 ' + x.paymentMethod + '／用途 ' + (x.purposeHint || '空') + '／T番号 ' + (x.invoiceNumber ? 'あり' : 'なし') + (x.unreadable.length ? '／読めず ' + x.unreadable.join(',') : ''));
           if (m === 0) log('R' + no + ' 選択→最初の結果（T6）', Date.now() - t0 <= 15000, sec(Date.now() - t0) + '（合格の目安 15秒以内）');
         }
-      } catch (e) { log('R' + no + ' 読み取り', false, errText(e)); }
+      } catch (e) {
+        log('R' + no + ' 読み取り', false, '通信に失敗：' + errText(e));
+        // AIの答えが届かなかったモデルは、空欄ではなくエラーとしてカードに出す（10/5 試験で「NaN」と紛らわしかった）
+        models.forEach(function (m) { if (!rec.results[m]) rec.results[m] = { error: '通信に失敗しました（AIの答えが届いていません）：' + errText(e) }; });
+      }
       renderCard(rec, models);
       if (compare && i < files.length - 1) { var wait = Math.max(0, 15000 - (Date.now() - t0)); if (wait) { $('readProgress').textContent = '混雑を避けるため ' + Math.ceil(wait / 1000) + '秒待っています…'; await sleep(wait); } }
     }
