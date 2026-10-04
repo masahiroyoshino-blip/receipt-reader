@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>領収書アプリ 試作 Step 0</title>
+<style>
+  :root { --ink:#1f2328; --sub:#57606a; --line:#d0d7de; --bg:#f6f8fa; --ok:#1a7f37; --ng:#cf222e; --accent:#0969da; --warn:#fff8c5; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; color:var(--ink); background:#fff; font-size:15px; line-height:1.6; }
+  main { max-width: 820px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  h3 { font-size: 15px; margin: 10px 0 4px; }
+  .note { color: var(--sub); font-size: 13px; }
+  section { border:1px solid var(--line); border-radius: 10px; padding: 14px; margin: 14px 0; }
+  button { font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; margin: 4px 6px 4px 0; min-height: 44px; }
+  button.primary { background: var(--accent); color:#fff; border-color: var(--accent); }
+  button.small { min-height: 34px; padding: 4px 10px; font-size: 13px; }
+  button:disabled { opacity: .45; cursor: default; }
+  input[type=text], input[type=number], input[type=date], select, textarea { font: inherit; padding: 8px; border:1px solid var(--line); border-radius: 8px; width: 100%; }
+  label { display:block; margin: 8px 0 4px; font-weight: 600; font-size: 14px; }
+  .row { display:flex; gap: 10px; flex-wrap: wrap; } .row > div { flex: 1 1 180px; }
+  .box { background: var(--bg); border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+  .card { border:1px solid var(--line); border-radius: 8px; padding: 10px; margin: 10px 0; }
+  .card img { max-width: 120px; max-height: 160px; border:1px solid var(--line); border-radius: 4px; float: right; margin-left: 8px; }
+  .card::after { content:''; display:block; clear:both; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border:1px solid var(--line); padding: 5px; text-align: left; vertical-align: top; }
+  td select { width:auto; padding: 2px 4px; font-size: 13px; }
+  .ok { color: var(--ok); font-weight: 600; } .ng { color: var(--ng); font-weight: 600; }
+  .miss { background: var(--warn); }
+  .scroll { overflow-x:auto; }
+  .event { display:block; width:100%; text-align:left; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>領収書アプリ 試作（Step 0：成立確認）</h1>
+  <p class="note">本番の画面ではありません。「できるかどうか」を確かめるための試験道具です。上から順に試して、最後に「結果をコピー」を押してチャットに貼ってください。</p>
+
+  <section id="setupSec">
+    <h2>0. 初期設定（この端末で1回だけ）</h2>
+    <p class="note">手順書の値を入れて保存します。この端末のブラウザにだけ保存されます。</p>
+    <label for="cfgClient">ログイン用クライアントID（議事録アプリと同じ）</label>
+    <input type="text" id="cfgClient" placeholder="xxxxxxxx.apps.googleusercontent.com" autocomplete="off">
+    <label for="cfgApi">裏側API（領収書アプリ_API）のURL</label>
+    <input type="text" id="cfgApi" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    <label for="cfgPicker">フォルダ選択用のAPIキー（Picker用）</label>
+    <input type="text" id="cfgPicker" placeholder="AIza…" autocomplete="off">
+    <button id="btnCfg" class="primary">保存</button>
+  </section>
+
+  <section>
+    <h2>1. ログイン</h2>
+    <button id="btnLogin" class="primary">Googleでログイン</button>
+    <span id="who" class="note"></span>
+  </section>
+
+  <section>
+    <h2>2. 読み取り精度（T5）と撮影（T6）</h2>
+    <p class="note">領収書を撮るか、画像・PDFを選びます（複数可）。比較モードでは1枚ずつ2つのモデルで読み、混雑を避けるため1枚ごとに約15秒あけます。</p>
+    <div class="row">
+      <div><label for="mode">読み方</label><select id="mode"><option value="compare">比較（2モデル）</option><option value="one">1モデルだけ（速さの確認）</option></select></div>
+      <div><label for="modelA">モデルA（軽い・回数が多い）</label><input type="text" id="modelA" value="gemini-3.5-flash-lite"></div>
+      <div><label for="modelB">モデルB（高精度・回数が少ない）</label><input type="text" id="modelB" value="gemini-3.8-flash"></div>
+    </div>
+    <label for="files">領収書（カメラ・写真・PDF）</label>
+    <input type="file" id="files" accept="image/*,application/pdf" multiple>
+    <p class="note" id="readProgress"></p>
+    <div id="cards"></div>
+    <button id="btnJudge" disabled>判定を集計する</button>
+    <div class="box hide" id="judgeBox"></div>
+  </section>
+
+  <section>
+    <h2>3. 確認画面の代わり（保存する1件）</h2>
+    <p class="note">2の結果カードで「この1件で保存テスト」を押すと入ります。手で直しても構いません。</p>
+    <div class="row">
+      <div><label for="fDate">立替日</label><input type="date" id="fDate"></div>
+      <div><label for="fAmount">金額（円・数字のみ）</label><input type="number" id="fAmount" inputmode="numeric"></div>
+    </div>
+    <label for="fProject">対象案件</label>
+    <input type="text" id="fProject" placeholder="例：愛知県小牧市：出張授業">
+    <button id="btnCal" class="small">この日の予定から候補を出す（T7）</button>
+    <div id="calList"></div>
+    <div class="row">
+      <div><label for="fVendor">利用会社</label><input type="text" id="fVendor"></div>
+      <div><label for="fPurpose">用途</label><input type="text" id="fPurpose" placeholder="例：宿泊費用"></div>
+    </div>
+    <div class="row">
+      <div><label for="fPay">支払方法</label><select id="fPay"><option>現金</option><option>クレジットカード</option><option>交通系IC</option><option>QR決済</option><option>電子マネー</option><option>その他</option><option>不明</option></select></div>
+      <div><label for="fInvoice">インボイス登録番号</label><input type="text" id="fInvoice"></div>
+    </div>
+    <p class="note" id="fileNamePreview"></p>
+  </section>
+
+  <section>
+    <h2>4. Driveへの保存（T3）と台帳（T4）</h2>
+    <p class="note"><strong>本物の経理フォルダは選ばないでください。</strong>手順書で作った「領収書アプリ_試験」フォルダを選びます。</p>
+    <button id="btnPick" disabled>保存先のフォルダを選ぶ</button>
+    <span id="pickedName" class="note"></span><br>
+    <button id="btnList" disabled>中の「○年○月稼働」を探す（T3）</button>
+    <div id="listBox" class="note"></div>
+    <button id="btnSave" class="primary" disabled>保存テスト（Drive＋台帳）</button>
+    <button id="btnPickMonth" disabled>予備案：稼働フォルダを直接選んで保存</button>
+    <p id="saved" class="note"></p>
+  </section>
+
+  <section>
+    <h2>5. 申請文と申請の管理（T2・T8）</h2>
+    <h3>その場で申請</h3>
+    <div class="box" id="claimText">（3を埋めると、ここに申請文が出ます）</div>
+    <button id="btnClip">申請文をコピー</button>
+    <button id="btnSlack">Slackの立替精算チャンネルを開く</button>
+    <h3>台帳で管理（4の保存テストのあとに使えます）</h3>
+    <button id="btnMark" disabled>台帳のこの行を「申請済み」にする</button>
+    <button id="btnPending" disabled>台帳の未申請を数えて、まとめた申請文を作る</button>
+    <div class="box hide" id="pendingBox"></div>
+    <button id="btnPendingCopy" disabled>まとめた申請文をコピー</button>
+  </section>
+
+  <section>
+    <h2>結果ログ</h2>
+    <button id="btnCopy" class="primary">結果をコピー</button>
+    <div class="scroll"><table id="logTable"><tr><th>時刻</th><th>テスト</th><th>結果</th><th>詳細</th></tr></table></div>
+  </section>
+</main>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js" async defer></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var BASE_SCOPES = 'openid email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly';
+  var SLACK_CHANNEL_URL = 'https://slack.com/app_redirect?channel=C08J736MX5H';
+  var LEDGER_HEADER = ['申請ID', '登録日時', '立替日', '対象月', '対象案件', '利用会社', '用途', 'インボイス登録番号', '金額（税込・円）', '支払方法', '読取ステータス', '申請状態', '申請日', '申請文', '領収書ファイル名', '領収書のリンク', '備考'];
+  var COL = { status: 11, claim: 13 };   // L列＝申請状態、N列＝申請文（0から数えた位置）
+  var cfg = {}, gtok = { token: '', exp: 0 }, session = '', email = '';
+  var LOG = [], RECEIPTS = [], picked = null, chosen = null, pickerReady = false, ledger = null, pendingText = '';
+
+  // ------------------------------------------------ 記録
+  function log(test, ok, detail) {
+    var at = new Date().toLocaleTimeString('ja-JP');
+    LOG.push({ at: at, test: test, ok: ok, detail: detail });
+    var tr = document.createElement('tr');
+    [at, test, ok === true ? 'OK' : ok === false ? 'NG' : '情報', detail].forEach(function (v, i) {
+      var td = document.createElement('td'); td.textContent = v;
+      if (i === 2) td.className = ok === true ? 'ok' : ok === false ? 'ng' : '';
+      tr.appendChild(td);
+    });
+    $('logTable').appendChild(tr);
+  }
+  function errText(e) { return (e && (e.message || e)) || String(e); }
+  function kb(n) { return Math.round(n / 1024) + 'KB'; }
+  function sec(ms) { return (ms / 1000).toFixed(1) + '秒'; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function yen(n) { return Number(n).toLocaleString('ja-JP'); }
+
+  // ------------------------------------------------ 0. 初期設定
+  function loadCfg() {
+    try { cfg = JSON.parse(localStorage.getItem('receiptCfg') || '{}'); } catch (e) { cfg = {}; }
+    $('cfgClient').value = cfg.clientId || ''; $('cfgApi').value = cfg.apiUrl || ''; $('cfgPicker').value = cfg.pickerKey || '';
+    if (cfg.clientId && cfg.apiUrl) $('setupSec').querySelector('.note').textContent = '設定済みです。変える場合だけ入力し直してください。';
+  }
+  $('btnCfg').onclick = function () {
+    cfg = { clientId: $('cfgClient').value.trim(), apiUrl: $('cfgApi').value.trim(), pickerKey: $('cfgPicker').value.trim() };
+    try { localStorage.setItem('receiptCfg', JSON.stringify(cfg)); } catch (e) {}
+    log('初期設定', !!(cfg.clientId && cfg.apiUrl), (cfg.clientId && cfg.apiUrl ? '保存した' : 'クライアントIDとAPIのURLは必須') + '／Picker用キー ' + (cfg.pickerKey ? 'あり' : 'なし'));
+  };
+
+  // ------------------------------------------------ 1. ログイン
+  function requestToken(scope) {
+    return new Promise(function (resolve, reject) {
+      if (!window.google || !google.accounts || !google.accounts.oauth2) { reject(new Error('Googleのログイン部品を読み込めていません')); return; }
+      var client = google.accounts.oauth2.initTokenClient({
+        client_id: cfg.clientId, scope: scope, include_granted_scopes: true,
+        callback: function (r) {
+          if (r.error) { reject(new Error(r.error + ' ' + (r.error_description || ''))); return; }
+          gtok.token = r.access_token; gtok.exp = Date.now() + (Number(r.expires_in) || 3600) * 1000; gtok.scope = r.scope || '';
+          resolve(r);
+        },
+        error_callback: function (e) { reject(new Error(e.type || 'ログイン画面を開けませんでした')); }
+      });
+      client.requestAccessToken({ prompt: '' });
+    });
+  }
+  function tokenValid() { return gtok.token && Date.now() < gtok.exp - 60000; }
+  function ensureToken() { return tokenValid() ? Promise.resolve() : requestToken(BASE_SCOPES); }
+
+  $('btnLogin').onclick = function () {
+    if (!cfg.clientId || !cfg.apiUrl) { log('ログイン', false, '先に「0. 初期設定」を保存してください'); return; }
+    requestToken(BASE_SCOPES).then(function () {
+      log('ログイン Google', true, '許可を受け取った（ドライブ：このアプリが作ったもの＋選んだフォルダ／カレンダー：閲覧のみ）');
+      return api('login', { accessToken: gtok.token });
+    }).then(function (r) {
+      if (!r.ok) throw new Error(r.error);
+      session = r.session; email = r.email;
+      $('who').textContent = 'ログイン中：' + r.email;
+      $('btnPick').disabled = false; $('btnPickMonth').disabled = false;
+      log('ログイン 裏側API', true, '通行証を受け取った（' + Math.round(r.expiresInSec / 3600) + '時間有効）');
+    }).catch(function (e) { log('ログイン', false, errText(e)); });
+  };
+
+  function api(action, payload) {
+    var t0 = Date.now();
+    var body = JSON.stringify(Object.assign({ action: action, session: session }, payload || {}));
+    return fetch(cfg.apiUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body, redirect: 'follow' })
+      .then(function (res) { return res.text(); })
+      .then(function (t) {
+        var j; try { j = JSON.parse(t); } catch (e) { throw new Error('裏側APIの返事を読めません（公開設定が「全員」か確認）: ' + t.slice(0, 120)); }
+        j.roundTripMs = Date.now() - t0; return j;
+      });
+  }
+
+  function gfetch(url, opts) {
+    return ensureToken().then(function () {
+      opts = opts || {}; opts.headers = Object.assign({ Authorization: 'Bearer ' + gtok.token }, opts.headers || {});
+      return fetch(url, opts);
+    }).then(function (res) {
+      return res.text().then(function (t) {
+        var j = null; try { j = JSON.parse(t); } catch (e) {}
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + ((j && j.error && (j.error.message || j.error)) || t.slice(0, 150)));
+        return j;
+      });
+    });
+  }
+
+  // ------------------------------------------------ 2. 読み取り
+  /** 画像は長辺1600pxのJPEGに縮める。PDFはそのまま */
+  function prepare(file) {
+    if (file.type === 'application/pdf') return Promise.resolve({ blob: file, mime: 'application/pdf', note: 'PDFはそのまま' });
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var w = img.naturalWidth, h = img.naturalHeight, s = Math.min(1, 1600 / Math.max(w, h));
+        var c = document.createElement('canvas'); c.width = Math.round(w * s); c.height = Math.round(h * s);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { b ? resolve({ blob: b, mime: 'image/jpeg', note: w + '×' + h + ' → ' + c.width + '×' + c.height, preview: c.toDataURL('image/jpeg', 0.5) }) : reject(new Error('画像を縮められませんでした')); }, 'image/jpeg', 0.85);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('このブラウザでは画像を開けません（形式：' + (file.type || '不明') + '）')); };
+      img.src = url;
+    });
+  }
+  function toBase64(blob) {
+    return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = rej; r.readAsDataURL(blob); });
+  }
+
+  $('files').onchange = async function () {
+    var files = Array.prototype.slice.call(this.files || []);
+    if (!files.length) return;
+    if (!session) { log('読み取り', false, '先にログインしてください'); return; }
+    var compare = $('mode').value === 'compare';
+    var models = compare ? [$('modelA').value.trim(), $('modelB').value.trim()] : [$('modelA').value.trim()];
+    this.disabled = true;
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i], t0 = Date.now(), no = RECEIPTS.length + 1;
+      $('readProgress').textContent = files.length + '件中 ' + (i + 1) + '件目を読み取り中…';
+      var rec = { no: no, origType: f.type || '不明', origSize: f.size, results: {} };
+      RECEIPTS.push(rec);
+      try {
+        var p = await prepare(f);
+        rec.blob = p.blob; rec.mime = p.mime; rec.preview = p.preview || '';
+        log('R' + no + ' 下ごしらえ（T6）', true, rec.origType + ' ' + kb(f.size) + ' → ' + p.mime + ' ' + kb(p.blob.size) + '（' + p.note + '）' + sec(Date.now() - t0));
+        var b64 = await toBase64(p.blob);
+        for (var m = 0; m < models.length; m++) {
+          var r = await api('read', { file: b64, mimeType: p.mime, model: models[m], noFallback: compare });
+          if (!r.ok) { rec.results[models[m]] = { error: r.error }; log('R' + no + ' 読み取り ' + models[m], false, 'HTTP ' + r.code + ' ' + r.error); continue; }
+          rec.results[models[m]] = Object.assign({ ms: r.roundTripMs, model: r.model }, r.result);
+          var x = r.result;
+          log('R' + no + ' 読み取り ' + r.model, true, '往復 ' + sec(r.roundTripMs) + '／種類 ' + x.docType + '／枚数 ' + x.receiptCount + '／日付 ' + (x.date || '空') + '／会社 ' + (x.vendor || '空') + '／金額 ' + (x.amount === '' ? '空' : x.amount) + '／支払 ' + x.paymentMethod + '／用途 ' + (x.purposeHint || '空') + '／T番号 ' + (x.invoiceNumber ? 'あり' : 'なし') + (x.unreadable.length ? '／読めず ' + x.unreadable.join(',') : ''));
+          if (m === 0) log('R' + no + ' 選択→最初の結果（T6）', Date.now() - t0 <= 15000, sec(Date.now() - t0) + '（合格の目安 15秒以内）');
+        }
+      } catch (e) { log('R' + no + ' 読み取り', false, errText(e)); }
+      renderCard(rec, models);
+      if (compare && i < files.length - 1) { var wait = Math.max(0, 15000 - (Date.now() - t0)); if (wait) { $('readProgress').textContent = '混雑を避けるため ' + Math.ceil(wait / 1000) + '秒待っています…'; await sleep(wait); } }
+    }
+    $('readProgress').textContent = '読み取り完了（' + RECEIPTS.length + '件）。各カードで正誤を選んで「判定を集計する」を押してください。';
+    $('btnJudge').disabled = false; this.disabled = false; this.value = '';
+  };
+
+  function renderCard(rec, models) {
+    var d = document.createElement('div'); d.className = 'card'; d.id = 'card' + rec.no;
+    var h = (rec.preview ? '<img src="' + rec.preview + '" alt="">' : '') + '<h3>R' + rec.no + '（' + esc(rec.origType) + '）</h3>';
+    h += '<div class="scroll"><table><tr><th>モデル</th><th>日付</th><th>会社</th><th>金額</th><th>支払</th><th>用途</th><th>枚数</th><th>秒</th></tr>';
+    models.forEach(function (m) {
+      var x = rec.results[m] || {};
+      if (x.error) { h += '<tr><td>' + esc(m) + '</td><td colspan="7" class="ng">' + esc(x.error) + '</td></tr>'; return; }
+      var miss = function (k) { return (x.unreadable || []).indexOf(k) >= 0 ? ' class="miss"' : ''; };
+      h += '<tr><td>' + esc(m) + '</td><td' + miss('date') + '>' + esc(x.date || '（空）') + '</td><td' + miss('vendor') + '>' + esc(x.vendor || '（空）') + '</td><td' + miss('amount') + '>' + (x.amount === '' ? '（空）' : yen(x.amount)) + '</td><td>' + esc(x.paymentMethod) + '</td><td>' + esc(x.purposeHint) + '</td><td>' + esc(x.receiptCount) + '</td><td>' + (x.ms ? (x.ms / 1000).toFixed(1) : '') + '</td></tr>';
+      h += '<tr><td class="note">判定</td>' + ['date', 'vendor', 'amount'].map(function (k) {
+        return '<td><select data-no="' + rec.no + '" data-model="' + esc(m) + '" data-key="' + k + '"><option value="">選ぶ</option><option value="ok">正しい</option><option value="ng">誤り</option><option value="blank">空欄</option></select></td>';
+      }).join('') + '<td colspan="4"></td></tr>';
+    });
+    h += '</table></div><button class="small" data-use="' + rec.no + '">この1件で保存テスト</button>';
+    d.innerHTML = h;
+    $('cards').appendChild(d);
+    d.querySelector('[data-use]').onclick = function () { useReceipt(rec, models); };
+  }
+
+  $('btnJudge').onclick = function () {
+    var sum = {};
+    Array.prototype.forEach.call(document.querySelectorAll('#cards select'), function (s) {
+      if (!s.value) return;
+      var m = s.dataset.model; sum[m] = sum[m] || { date: {}, vendor: {}, amount: {} };
+      sum[m][s.dataset.key][s.value] = (sum[m][s.dataset.key][s.value] || 0) + 1;
+    });
+    var label = { date: '日付', vendor: '会社', amount: '金額' }, lines = [];
+    Object.keys(sum).forEach(function (m) {
+      var parts = ['date', 'vendor', 'amount'].map(function (k) { var c = sum[m][k]; return label[k] + ' 正' + (c.ok || 0) + '・誤' + (c.ng || 0) + '・空' + (c.blank || 0); });
+      var wrong = (sum[m].date.ng || 0) + (sum[m].amount.ng || 0);
+      lines.push(m + '：' + parts.join('／'));
+      log('判定 ' + m + '（T5）', wrong === 0, parts.join('／') + '（合格の目安：日付と金額の「誤」が0件）');
+    });
+    $('judgeBox').classList.remove('hide'); $('judgeBox').textContent = lines.join('\n') || '判定が選ばれていません';
+  };
+
+  // ------------------------------------------------ 3. 保存する1件
+  function useReceipt(rec, models) {
+    var best = null;
+    for (var i = models.length - 1; i >= 0; i--) { var x = rec.results[models[i]]; if (x && !x.error) { best = x; break; } }
+    chosen = rec; best = best || {};
+    $('fDate').value = best.date || ''; $('fAmount').value = best.amount === '' || best.amount == null ? '' : best.amount;
+    $('fVendor').value = best.vendor || ''; $('fPurpose').value = best.purposeHint || ''; $('fInvoice').value = best.invoiceNumber || '';
+    if (best.paymentMethod) $('fPay').value = best.paymentMethod;
+    chosen.ai = { date: $('fDate').value, amount: String($('fAmount').value), vendor: $('fVendor').value };
+    refreshForm();
+    log('保存する1件', true, 'R' + rec.no + ' を選んだ（' + (best.model || '') + ' の結果を入れた）');
+    $('fProject').focus();
+  }
+  ['fDate', 'fAmount', 'fProject', 'fVendor', 'fPurpose', 'fPay', 'fInvoice'].forEach(function (id) { $(id).oninput = refreshForm; $(id).onchange = refreshForm; });
+
+  function form() {
+    return { date: $('fDate').value, amount: $('fAmount').value === '' ? '' : Number($('fAmount').value), project: $('fProject').value.trim(),
+      vendor: $('fVendor').value.trim(), purpose: $('fPurpose').value.trim(), pay: $('fPay').value, invoice: $('fInvoice').value.trim() };
+  }
+  function parts(dateStr) { var a = String(dateStr).split('-'); return { y: Number(a[0]), m: Number(a[1]), d: Number(a[2]), ymd: a.join('') }; }
+  function safeName(s) { return String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim(); }
+  function fileName(f) { var p = parts(f.date); return p.ymd + '_' + safeName(f.project) + '_' + f.amount + '円' + (chosen && chosen.mime === 'application/pdf' ? '.pdf' : '.jpg'); }
+  function claimText(f) {
+    var p = parts(f.date);
+    return ['▶︎立替日：' + p.y + '年' + p.m + '月' + p.d + '日', '▶︎対象案件：' + f.project, '▶︎利用会社：' + f.vendor, '▶︎用途：' + f.purpose, '`金額：' + yen(f.amount) + '円`'].join('\n');
+  }
+  function formReady(f) { return f.date && f.amount !== '' && f.project && f.vendor && f.purpose; }
+  function refreshForm() {
+    var f = form(), ok = formReady(f);
+    $('fileNamePreview').textContent = ok ? 'ファイル名：' + fileName(f) : '立替日・金額・対象案件・利用会社・用途がそろうと、ファイル名と申請文が出ます';
+    $('claimText').textContent = ok ? claimText(f) : '（3を埋めると、ここに申請文が出ます）';
+    $('btnSave').disabled = !(ok && picked && chosen);
+  }
+
+  // T7 カレンダー候補（予定名は画面に出すだけで、ログには件数しか残さない）
+  $('btnCal').onclick = function () {
+    var f = form(); if (!f.date) { log('案件名の候補（T7）', false, '先に立替日を入れてください'); return; }
+    var d0 = new Date(f.date + 'T00:00:00'), d1 = new Date(d0.getTime() + 86400000);
+    var url = 'https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&maxResults=20' +
+      '&timeMin=' + encodeURIComponent(d0.toISOString()) + '&timeMax=' + encodeURIComponent(d1.toISOString());
+    gfetch(url).then(function (j) {
+      var list = (j.items || []).filter(function (ev) { return ev.summary; });
+      var box = $('calList'); box.innerHTML = '';
+      if (!list.length) box.textContent = 'この日の予定はありません';
+      list.forEach(function (ev) {
+        var b = document.createElement('button'); b.className = 'event small'; b.textContent = ev.summary;
+        b.onclick = function () { $('fProject').value = ev.summary; refreshForm(); log('案件名の候補（T7）', true, '予定から案件名を入れた（中身はログに残さない）'); };
+        box.appendChild(b);
+      });
+      log('案件名の候補（T7）', list.length > 0, 'その日の予定 ' + list.length + '件を候補に出した');
+    }).catch(function (e) { log('案件名の候補（T7）', false, errText(e)); });
+  };
+
+  // ------------------------------------------------ 4. Drive（T3）と台帳（T4）
+  function loadPicker() {
+    if (pickerReady) return Promise.resolve();
+    return new Promise(function (resolve, reject) {
+      if (!window.gapi) { reject(new Error('フォルダ選択の部品を読み込めていません')); return; }
+      gapi.load('picker', { callback: function () { pickerReady = true; resolve(); }, onerror: function () { reject(new Error('フォルダ選択の部品の読み込みに失敗')); } });
+    });
+  }
+  function openPicker(title) {
+    if (!cfg.pickerKey) return Promise.reject(new Error('初期設定に「フォルダ選択用のAPIキー」が入っていません'));
+    return ensureToken().then(loadPicker).then(function () {
+      return new Promise(function (resolve, reject) {
+        var my = new google.picker.DocsView(google.picker.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder');
+        var shared = new google.picker.DocsView(google.picker.ViewId.FOLDERS).setEnableDrives(true).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder');
+        var appId = String(cfg.clientId).split('-')[0];
+        new google.picker.PickerBuilder()
+          .setTitle(title).addView(my).addView(shared)
+          .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+          .setOAuthToken(gtok.token).setDeveloperKey(cfg.pickerKey).setAppId(appId).setLocale('ja')
+          .setCallback(function (d) {
+            if (d.action === google.picker.Action.PICKED) { var doc = d.docs[0]; resolve({ id: doc.id, name: doc.name, driveId: doc.driveId || '' }); }
+            else if (d.action === google.picker.Action.CANCEL) reject(new Error('キャンセルしました'));
+          }).build().setVisible(true);
+      });
+    });
+  }
+  $('btnPick').onclick = function () {
+    openPicker('保存先のフォルダ（領収書アプリ_試験）を選ぶ').then(function (f) {
+      picked = f; $('pickedName').textContent = '選択中：' + f.name;
+      $('btnList').disabled = false; refreshForm();
+      log('保存先の選択', true, '「' + f.name + '」を選んだ（' + (f.driveId ? '共有ドライブ' : 'マイドライブ') + '）');
+    }).catch(function (e) { log('保存先の選択', false, errText(e)); });
+  };
+
+  var DRIVE_OPTS = 'supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives';
+  function listChildren(parentId, extraQ) {
+    var q = "'" + parentId + "' in parents and trashed=false" + (extraQ ? ' and ' + extraQ : '');
+    return gfetch('https://www.googleapis.com/drive/v3/files?' + DRIVE_OPTS + '&pageSize=200&fields=files(id,name,mimeType)&q=' + encodeURIComponent(q)).then(function (j) { return j.files || []; });
+  }
+  function createFolder(name, parentId) {
+    return gfetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,webViewLink', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] })
+    });
+  }
+  function qName(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+  /** 「2026年10月稼働」「2026年09月稼働」どちらの書き方でも見つける */
+  function findMonthFolder(parentId, y, m) {
+    return listChildren(parentId, "mimeType='application/vnd.google-apps.folder'").then(function (list) {
+      var hit = list.filter(function (f) { var x = f.name.match(/(\d{4})年0?(\d{1,2})月稼働/); return x && Number(x[1]) === y && Number(x[2]) === m; })[0];
+      return { hit: hit || null, folders: list.length };
+    });
+  }
+  $('btnList').onclick = function () {
+    var f = form(), p = f.date ? parts(f.date) : { y: new Date().getFullYear(), m: new Date().getMonth() + 1 };
+    listChildren(picked.id).then(function (all) {
+      var months = all.filter(function (x) { return /\d{4}年0?\d{1,2}月稼働/.test(x.name); });
+      $('listBox').textContent = '見えたもの：' + all.length + '件（うち稼働フォルダ ' + months.length + '件：' + months.map(function (x) { return x.name; }).join('、') + '）';
+      var hit = months.filter(function (x) { var a = x.name.match(/(\d{4})年0?(\d{1,2})月稼働/); return Number(a[1]) === p.y && Number(a[2]) === p.m; })[0];
+      log('稼働フォルダを探す（T3）', months.length > 0, '選んだフォルダの中で見えたもの ' + all.length + '件、稼働フォルダ ' + months.length + '件' + (hit ? '、' + p.y + '年' + p.m + '月分あり' : '、' + p.y + '年' + p.m + '月分なし'));
+    }).catch(function (e) { log('稼働フォルダを探す（T3）', false, errText(e)); });
+  };
+
+  function multipartUpload(meta, blob) {
+    var boundary = 'b' + Math.random().toString(16).slice(2);
+    var body = new Blob([
+      '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(meta) + '\r\n',
+      '--' + boundary + '\r\nContent-Type: ' + (blob.type || 'application/octet-stream') + '\r\n\r\n', blob, '\r\n--' + boundary + '--'
+    ]);
+    return gfetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink', {
+      method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: body
+    });
+  }
+
+  /** monthFolder を渡したときは、それを稼働フォルダとして使う（予備案） */
+  async function saveTest(monthFolder, ledgerParent) {
+    var f = form(); if (!formReady(f) || !chosen) { log('保存テスト', false, '3の欄を埋めてください'); return; }
+    var p = parts(f.date), t0 = Date.now();
+    $('btnSave').disabled = true;
+    try {
+      // 稼働フォルダ
+      var month = monthFolder;
+      if (!month) {
+        var found = await findMonthFolder(picked.id, p.y, p.m);
+        if (found.hit) { month = found.hit; log('保存 稼働フォルダ（T3）', true, '既存の「' + month.name + '」を見つけて使った'); }
+        else {
+          month = await createFolder(p.y + '年' + p.m + '月稼働', picked.id);
+          log('保存 稼働フォルダ（T3）', false, '既存の稼働フォルダが見えなかったので「' + month.name + '」を作った（中に見えたフォルダ ' + found.folders + '件）');
+        }
+      } else log('保存 稼働フォルダ（予備案）', true, '直接選んだ「' + month.name + '」を使う');
+      // 経費領収書フォルダ（同じ日付・案件があれば使う）
+      var rName = '経費領収書：' + p.m + '/' + p.d + '_' + f.project;
+      var rList = await listChildren(month.id, "mimeType='application/vnd.google-apps.folder' and name='" + qName(rName) + "'");
+      var rFolder = rList[0] || await createFolder(rName, month.id);
+      log('保存 経費領収書フォルダ', true, (rList[0] ? '既存を使った：' : '作った：') + rName);
+      // 同じ名前のファイルがあれば _2, _3 を付ける
+      var base = fileName(f), ext = base.slice(base.lastIndexOf('.')), stem = base.slice(0, base.lastIndexOf('.')), name = base;
+      var same = await listChildren(rFolder.id, "name contains '" + qName(stem) + "'");
+      for (var n = 2; same.some(function (x) { return x.name === name; }); n++) name = stem + '_' + n + ext;
+      var up = await multipartUpload({ name: name, parents: [rFolder.id] }, chosen.blob);
+      log('保存 領収書ファイル', true, up.name + '（' + kb(chosen.blob.size) + '）');
+      // 台帳
+      var row = await appendLedger(f, up, p, ledgerParent.id);
+      $('saved').innerHTML = '保存しました：<a href="' + esc(up.webViewLink) + '" target="_blank" rel="noopener">' + esc(up.name) + '</a>／台帳 ' + esc(row.where);
+      log('保存テスト 全体', true, '合計 ' + sec(Date.now() - t0));
+    } catch (e) { log('保存テスト', false, errText(e)); }
+    $('btnSave').disabled = false;
+  }
+  $('btnSave').onclick = function () { saveTest(null, picked); };
+  /** 予備案：稼働フォルダを直接選ぶ。台帳は「保存先」を選んでいればそこ、なければ選んだ稼働フォルダの中に作る */
+  $('btnPickMonth').onclick = function () {
+    if (!formReady(form()) || !chosen) { log('予備案', false, '先に3の欄を埋めてください'); return; }
+    openPicker('稼働フォルダ（例：2026年10月稼働）を選ぶ').then(function (fd) {
+      return saveTest(fd, picked || fd);
+    }).catch(function (e) { log('予備案', false, errText(e)); });
+  };
+
+  function sheetsUrl(path) { return 'https://sheets.googleapis.com/v4/spreadsheets/' + path; }
+  async function appendLedger(f, up, p, parentId) {
+    var title = '立替金精算台帳_' + p.y, tab = p.y + '-' + ('0' + p.m).slice(-2);
+    var list = await listChildren(parentId, "mimeType='application/vnd.google-apps.spreadsheet' and name='" + qName(title) + "'");
+    var ssId, created = false;
+    if (list.length) ssId = list[0].id;
+    else {
+      var ss = await gfetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: title, mimeType: 'application/vnd.google-apps.spreadsheet', parents: [parentId] })
+      });
+      ssId = ss.id; created = true;
+    }
+    log('台帳 ファイル（T4）', true, (created ? '作った：' : '既存を使った：') + title);
+    var meta = await gfetch(sheetsUrl(ssId + '?fields=sheets.properties'));
+    var sheets = (meta.sheets || []).map(function (s) { return s.properties; });
+    var has = sheets.some(function (s) { return s.title === tab; });
+    if (!has) {
+      var rename = created && sheets.length === 1;
+      var req = rename
+        ? { updateSheetProperties: { properties: { sheetId: sheets[0].sheetId, title: tab, gridProperties: { frozenRowCount: 1 } }, fields: 'title,gridProperties.frozenRowCount' } }
+        : { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 } } } };
+      var res = await gfetch(sheetsUrl(ssId + ':batchUpdate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests: [req] }) });
+      var sheetId = rename ? sheets[0].sheetId : res.replies[0].addSheet.properties.sheetId;
+      await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A1") + '?valueInputOption=RAW'), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [LEDGER_HEADER] })
+      });
+      // 申請状態（L列）をプルダウンにし、申請文（N列）は折り返して全部見えるようにする
+      await gfetch(sheetsUrl(ssId + ':batchUpdate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests: [
+        { setDataValidation: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.status, endColumnIndex: COL.status + 1 },
+          rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
+        { repeatCell: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.claim, endColumnIndex: COL.claim + 1 },
+          cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
+        { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: COL.claim, endIndex: COL.claim + 1 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } }
+      ] }) });
+      log('台帳 月のシート（T4）', true, '「' + tab + '」を' + (created ? '最初のシートの名前変更で' : '追加して') + '作り、見出し・申請状態のプルダウンを設定した');
+    }
+    var cur = await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A2:Q")));
+    var rows = cur.values || [];
+    var dup = rows.filter(function (r) { return r[2] === f.date && r[5] === f.vendor && String(r[8]) === String(f.amount); }).length;
+    if (dup) log('台帳 重複チェック', null, '同じ「立替日＋利用会社＋金額」が既に ' + dup + ' 行ある（本番では送信前に警告する）');
+    var prefix = p.ymd + '-' + email.split('@')[0] + '-';
+    var seq = rows.filter(function (r) { return String(r[0] || '').indexOf(prefix) === 0; }).length + 1;
+    var ai = chosen.ai || {}, edited = ai.date !== f.date || ai.amount !== String(f.amount) || ai.vendor !== f.vendor;
+    var blank = !ai.date && !ai.amount && !ai.vendor;
+    var now = new Date(), stamp = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2) + ' ' + ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+    var row = [prefix + ('0' + seq).slice(-2), stamp, f.date, tab, f.project, f.vendor, f.purpose, f.invoice, f.amount, f.pay, blank ? '手入力' : edited ? '一部手直し' : 'AIのまま', '未申請', '', claimText(f), up.name, up.webViewLink, '試験'];
+    var ap = await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A:Q") + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [row] })
+    });
+    var m = String((ap.updates || {}).updatedRange || '').match(/![A-Z]+(\d+)/);
+    ledger = { ssId: ssId, tab: tab, title: title, row: m ? Number(m[1]) : 0 };
+    $('btnMark').disabled = !ledger.row; $('btnPending').disabled = false;
+    log('台帳 行の追記（T4）', true, '「' + tab + '」の' + ledger.row + '行目に追加（申請ID ' + row[0] + '、読取ステータス ' + row[10] + '、申請文も記帳）');
+    return { where: title + ' ／ ' + tab };
+  }
+
+  // ------------------------------------------------ 台帳での申請管理（T2）
+  function a1(range) { return sheetsUrl(ledger.ssId + '/values/' + encodeURIComponent("'" + ledger.tab + "'!" + range)); }
+  $('btnMark').onclick = function () {
+    var now = new Date(), d = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+    gfetch(a1('L' + ledger.row + ':M' + ledger.row) + '?valueInputOption=RAW', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [['申請済み', d]] })
+    }).then(function () { return gfetch(a1('L' + ledger.row)); }).then(function (j) {
+      var v = ((j.values || [])[0] || [])[0];
+      log('台帳 申請済みにする（T2）', v === '申請済み', ledger.row + '行目の申請状態をアプリから変更 → 読み直すと「' + v + '」');
+    }).catch(function (e) { log('台帳 申請済みにする（T2）', false, errText(e)); });
+  };
+  /** 台帳の未申請行から、まとめ用の申請文を作る（本番の「まとめて申請」画面の元になる処理） */
+  $('btnPending').onclick = function () {
+    gfetch(a1('A2:Q')).then(function (j) {
+      var rows = (j.values || []).filter(function (r) { return r[COL.status] === '未申請'; });
+      var done = (j.values || []).filter(function (r) { return r[COL.status] === '申請済み'; }).length;
+      rows.sort(function (a, b) { return String(a[2]).localeCompare(String(b[2])); });
+      var text = rows.map(function (r) { return r[COL.claim] || ''; }).filter(Boolean).join('\n———\n');
+      pendingText = text;
+      $('pendingBox').classList.remove('hide');
+      $('pendingBox').textContent = rows.length ? text : '未申請はありません';
+      $('btnPendingCopy').disabled = !rows.length;
+      log('台帳 未申請を数える（T2）', true, '「' + ledger.tab + '」の未申請 ' + rows.length + '件・申請済み ' + done + '件（シートのプルダウンで変えた分も反映されるか確認）');
+    }).catch(function (e) { log('台帳 未申請を数える（T2）', false, errText(e)); });
+  };
+  $('btnPendingCopy').onclick = function () {
+    copyText(pendingText).then(function () { log('まとめた申請文のコピー', true, '未申請分を日付順・区切り線つきでコピーした'); });
+  };
+
+  // ------------------------------------------------ 5. 申請文の届け方
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
+    fallbackCopy(text); return Promise.resolve();
+  }
+  function fallbackCopy(text) { var ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (e) {} document.body.removeChild(ta); }
+
+  $('btnClip').onclick = function () {
+    var f = form(); if (!formReady(f)) { log('申請文のコピー', false, '3の欄を埋めてください'); return; }
+    copyText(claimText(f)).then(function () { log('申請文のコピー', true, '型どおりの申請文をコピーした（Slackに貼って型が崩れないか確認してください）'); });
+  };
+  $('btnSlack').onclick = function () {
+    window.open(SLACK_CHANNEL_URL, '_blank');
+    log('Slackを開く（T8）', null, 'リンクを開いた。Slackアプリ（またはブラウザ版）で立替精算チャンネルが開いたかを手順書の表に記入');
+  };
+
+  // ------------------------------------------------ 結果をコピー
+  $('btnCopy').onclick = function () {
+    var env = { ua: navigator.userAgent, clipboard: !!(navigator.clipboard && navigator.clipboard.writeText), receipts: RECEIPTS.length };
+    var lines = ['# 領収書アプリ Step 0 試験結果', '', '## 環境', '- ' + JSON.stringify(env), '', '## 結果'];
+    LOG.forEach(function (l) { lines.push('- ' + l.at + ' ｜ ' + l.test + ' ｜ ' + (l.ok === true ? 'OK' : l.ok === false ? 'NG' : '情報') + ' ｜ ' + l.detail); });
+    var text = lines.join('\n');
+    copyText(text).then(function () { log('コピー', true, LOG.length + '件'); });
+  };
+
+  loadCfg();
+})();
+</script>
+</body>
+</html>
