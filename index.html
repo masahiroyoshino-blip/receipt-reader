@@ -136,7 +136,8 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
   var BASE_SCOPES = 'openid email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.readonly';
-  var SLACK_CHANNEL_URL = 'https://slack.com/app_redirect?channel=C08J736MX5H';
+  // ワークスペース名入りの住所にする（app_redirect だと、複数のワークスペースに入っている人は別のワークスペースが開く）
+  var SLACK_CHANNEL_URL = 'https://replayce.slack.com/archives/C08J736MX5H';
   var LEDGER_HEADER = ['申請ID', '登録日時', '立替日', '対象月', '対象案件', '利用会社', '用途', 'インボイス登録番号', '金額（税込・円）', '支払方法', '読取ステータス', '申請状態', '申請日', '申請文', '領収書ファイル名', '領収書のリンク', '備考'];
   var COL = { status: 11, claim: 13 };   // L列＝申請状態、N列＝申請文（0から数えた位置）
   var cfg = {}, gtok = { token: '', exp: 0 }, session = '', email = '';
@@ -490,6 +491,20 @@
   };
 
   function sheetsUrl(path) { return 'https://sheets.googleapis.com/v4/spreadsheets/' + path; }
+  /** 申請状態（L列）をプルダウンに、申請文（N列）を折り返し表示にする。毎回かけ直しても同じ結果になる。
+   *  v1（10/5）でシートが既にあるとプルダウンが付かなかったため、作成時だけでなく保存のたびに行う */
+  async function ensureFormat(ssId, sheetId) {
+    try {
+      await gfetch(sheetsUrl(ssId + ':batchUpdate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests: [
+        { setDataValidation: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.status, endColumnIndex: COL.status + 1 },
+          rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
+        { repeatCell: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.claim, endColumnIndex: COL.claim + 1 },
+          cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
+        { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: COL.claim, endIndex: COL.claim + 1 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } }
+      ] }) });
+      log('台帳 プルダウン（T2）', true, '申請状態（L列）をプルダウンにし、申請文（N列）を折り返し表示にした');
+    } catch (e) { log('台帳 プルダウン（T2）', false, errText(e)); }
+  }
   async function appendLedger(f, up, p, parentId) {
     var title = '立替金精算台帳_' + p.y, tab = p.y + '-' + ('0' + p.m).slice(-2);
     var list = await listChildren(parentId, "mimeType='application/vnd.google-apps.spreadsheet' and name='" + qName(title) + "'");
@@ -504,27 +519,21 @@
     log('台帳 ファイル（T4）', true, (created ? '作った：' : '既存を使った：') + title);
     var meta = await gfetch(sheetsUrl(ssId + '?fields=sheets.properties'));
     var sheets = (meta.sheets || []).map(function (s) { return s.properties; });
-    var has = sheets.some(function (s) { return s.title === tab; });
-    if (!has) {
+    var mine = sheets.filter(function (s) { return s.title === tab; })[0];
+    var sheetId;
+    if (!mine) {
       var rename = created && sheets.length === 1;
       var req = rename
         ? { updateSheetProperties: { properties: { sheetId: sheets[0].sheetId, title: tab, gridProperties: { frozenRowCount: 1 } }, fields: 'title,gridProperties.frozenRowCount' } }
         : { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 } } } };
       var res = await gfetch(sheetsUrl(ssId + ':batchUpdate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests: [req] }) });
-      var sheetId = rename ? sheets[0].sheetId : res.replies[0].addSheet.properties.sheetId;
+      sheetId = rename ? sheets[0].sheetId : res.replies[0].addSheet.properties.sheetId;
       await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A1") + '?valueInputOption=RAW'), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [LEDGER_HEADER] })
       });
-      // 申請状態（L列）をプルダウンにし、申請文（N列）は折り返して全部見えるようにする
-      await gfetch(sheetsUrl(ssId + ':batchUpdate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requests: [
-        { setDataValidation: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.status, endColumnIndex: COL.status + 1 },
-          rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
-        { repeatCell: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 1000, startColumnIndex: COL.claim, endColumnIndex: COL.claim + 1 },
-          cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
-        { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: COL.claim, endIndex: COL.claim + 1 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } }
-      ] }) });
-      log('台帳 月のシート（T4）', true, '「' + tab + '」を' + (created ? '最初のシートの名前変更で' : '追加して') + '作り、見出し・申請状態のプルダウンを設定した');
-    }
+      log('台帳 月のシート（T4）', true, '「' + tab + '」を' + (rename ? '最初のシートの名前変更で' : '追加して') + '作り、見出しを書いた');
+    } else sheetId = mine.sheetId;
+    await ensureFormat(ssId, sheetId);
     var cur = await gfetch(sheetsUrl(ssId + '/values/' + encodeURIComponent("'" + tab + "'!A2:Q")));
     var rows = cur.values || [];
     var dup = rows.filter(function (r) { return r[2] === f.date && r[5] === f.vendor && String(r[8]) === String(f.amount); }).length;
@@ -571,7 +580,7 @@
     }).catch(function (e) { log('台帳 未申請を数える（T2）', false, errText(e)); });
   };
   $('btnPendingCopy').onclick = function () {
-    copyText(pendingText).then(function () { log('まとめた申請文のコピー', true, '未申請分を日付順・区切り線つきでコピーした'); });
+    copyClaim(pendingText).then(function (how) { log('まとめた申請文のコピー', true, '未申請分を日付順・区切り線つきでコピーした（' + how + '）'); });
   };
 
   // ------------------------------------------------ 5. 申請文の届け方
@@ -579,11 +588,29 @@
     if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
     fallbackCopy(text); return Promise.resolve();
   }
+  /** 申請文のコピー：書式つき（金額行を <code> に）と、そのままの文字の2種類をクリップボードに入れる。
+   *  Slackの入力欄は、貼り付けたバッククォートを書式に変えないことがある（10/5 試験）。書式つきで渡すと枠になる見込み */
+  function claimHtml(text) {
+    return text.split('\n').map(function (line) {
+      var m = line.match(/^`(.*)`$/);
+      return m ? '<code>' + esc(m[1]) + '</code>' : esc(line);
+    }).join('<br>');
+  }
+  function copyClaim(text) {
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      var item = new ClipboardItem({
+        'text/html': new Blob([claimHtml(text)], { type: 'text/html' }),
+        'text/plain': new Blob([text], { type: 'text/plain' })
+      });
+      return navigator.clipboard.write([item]).then(function () { return '書式つき'; }).catch(function () { return copyText(text).then(function () { return '文字のみ'; }); });
+    }
+    return copyText(text).then(function () { return '文字のみ'; });
+  }
   function fallbackCopy(text) { var ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (e) {} document.body.removeChild(ta); }
 
   $('btnClip').onclick = function () {
     var f = form(); if (!formReady(f)) { log('申請文のコピー', false, '3の欄を埋めてください'); return; }
-    copyText(claimText(f)).then(function () { log('申請文のコピー', true, '型どおりの申請文をコピーした（Slackに貼って型が崩れないか確認してください）'); });
+    copyClaim(claimText(f)).then(function (how) { log('申請文のコピー', true, '型どおりの申請文をコピーした（' + how + '）。Slackに貼って、金額の行がグレーの枠になるか確認'); });
   };
   $('btnSlack').onclick = function () {
     window.open(SLACK_CHANNEL_URL, '_blank');
