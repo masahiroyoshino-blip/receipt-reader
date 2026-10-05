@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.1.4';
+  var VERSION = '1.2.0';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -88,6 +88,14 @@
   $('#brandHome').addEventListener('click', function (e) { e.preventDefault(); if (canLeave()) goHome(); });
   $('#verLabel').textContent = 'v' + VERSION; $('#verLabel2').textContent = 'v' + VERSION;
   function canLeave() {
+    var inMulti = S.screen === 'multi' || (S.screen === 'confirm' && S.multiEdit);
+    if (inMulti) {
+      if (S.multiEdit) storeMultiItem();
+      if (M.saving) { toast('保存が終わるまでお待ちください'); return false; }
+      if (multiUnsaved().length && !confirm('まとめて読み取った領収書に、まだ保存していないものがあります。破棄して移動しますか？')) return false;
+      endMulti(); $('#btnMultiBack').hidden = true; S.cur = null;
+      return true;
+    }
     if (S.screen === 'confirm' && S.cur && !S.cur.saved && !confirm('まだ保存していません。この領収書を破棄して移動しますか？')) return false;
     return true;
   }
@@ -490,7 +498,7 @@
   function form() { return { date: fv('date'), amount: num(fv('amount')), project: fv('project'), vendor: fv('vendor'), purpose: fv('purpose'), pay: fv('pay'), invoice: fv('invoice') }; }
 
   function startConfirm(file, source) {
-    S.readSeq++;
+    S.readSeq++; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true;
     if (S.cur && S.cur.url) URL.revokeObjectURL(S.cur.url);
     S.cur = { file: file, ai: null, saved: false, events: [], stats: { source: source || '', type: file.type === 'application/pdf' ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } };
     Object.keys(F).forEach(function (k) { var el = $(F[k]); if (k !== 'pay') el.value = ''; el.classList.remove('check'); });
@@ -650,6 +658,196 @@
     S.rows.push({ ssId: L.id, tab: tab, cells: row.map(String) }); S.homeMonth = f.date.slice(0, 7);
     return { id: id, ssId: L.id, tab: tab, claim: claim, status: '未申請', fileName: up.name, fileUrl: up.webViewLink, path: S.settings.folder.name + ' › ' + month.name + (S.settings.split !== 'month' ? ' › ' + rName : ''), fresh: true, readStatus: row[10] };
   }
+
+  // ============================================================ 2b まとめて読み取り（5枚まで。読み取りは1枚ずつ順番に、保存はまとめて）
+  var MULTI_MAX = 5;
+  var M = { items: [], gen: 0, saving: false };
+  function multiUnsaved() { return M.items.filter(function (it) { return it.status !== 'saved'; }); }
+  function multiFlags(v, x) {
+    var un = (x && x.unreadable) || [];
+    return { date: !v.date || un.indexOf('date') >= 0, amount: !v.amount || un.indexOf('amount') >= 0, purpose: !v.purpose, vendor: !v.vendor || !LEGAL_RE.test(v.vendor) };
+  }
+  function multiNeedsCheck(it) { var f = it.flags || {}; return !!(f.date || f.amount || f.purpose || f.vendor) || it.receiptCount > 1; }
+  function multiDup(it, idx) {
+    var v = it.vals; if (!v.date || !v.amount) return false;
+    return duplicates(v).some(function (r) { return !it.saved || r.cells[C.id] !== it.saved.id; }) ||
+      M.items.slice(0, idx).some(function (o) { return o.vals.date === v.date && o.vals.amount === v.amount; });
+  }
+  function endMulti() {
+    M.gen++; M.items.forEach(function (it) { if (it.url) URL.revokeObjectURL(it.url); });
+    M.items = []; M.saving = false; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit');
+  }
+
+  $$('[data-action="pick-multi"]').forEach(function (b) { b.addEventListener('click', function () { $('#fileMulti').value = ''; $('#fileMulti').click(); }); });
+  $('#fileMulti').addEventListener('change', function () {
+    var files = Array.prototype.slice.call(this.files || []); if (!files.length) return;
+    if (files.length > MULTI_MAX) toast(MULTI_MAX + '枚までです。最初の' + MULTI_MAX + '枚を読み取ります', true);
+    startMulti(files.slice(0, MULTI_MAX));
+  });
+  function startMulti(files) {
+    endMulti();
+    var gen = M.gen;
+    M.items = files.map(function (file) {
+      var isPdf = file.type === 'application/pdf';
+      return { file: file, isPdf: isPdf, url: URL.createObjectURL(file), status: 'wait', wait: 0, error: '', ai: null, saved: null, receiptCount: 1,
+        vals: { date: '', amount: 0, project: '', vendor: '', purpose: '', pay: '不明', invoice: '' }, flags: {},
+        stats: { source: 'まとめて', type: isPdf ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } };
+    });
+    $('#mProject').value = ''; renderMultiCands();
+    show('multi'); renderMulti();
+    (async function () { for (var i = 0; i < M.items.length; i++) { if (gen !== M.gen) return; await readItem(M.items[i], gen); } })();
+  }
+  async function readItem(it, gen) {
+    it.status = 'reading'; renderMulti();
+    try { var p = await prepare(it.file); it.blob = p.blob; it.mime = p.mime; }
+    catch (e) { it.status = 'ng'; it.error = errText(e); renderMulti(); return; }
+    var b64 = await toBase64(it.blob), t0 = Date.now();
+    for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
+      var r;
+      try { r = await api('read', { file: b64, mimeType: it.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
+      if (gen !== M.gen) return;
+      it.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
+      if (r.ok && r.result) { it.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; it.stats.model = r.model || ''; applyAi(it, r.result); renderMulti(); return; }
+      noteError('まとめて読み取り', r.error || '');
+      if (!BUSY_RE.test(r.error || '') || i === AUTO_RETRY_SEC.length) { it.status = 'ng'; it.error = String(r.error || '').slice(0, 80); renderMulti(); return; }
+      for (var left = AUTO_RETRY_SEC[i]; left > 0; left--) { if (gen !== M.gen) return; it.wait = left; renderMulti(); await sleep(1000); }
+      it.wait = 0;
+    }
+  }
+  function applyAi(it, x) {
+    it.ai = { date: x.date || '', amount: x.amount === '' ? '' : String(x.amount), vendor: x.vendor || '' };
+    var v = it.vals;
+    if (!v.date) v.date = x.date || ''; if (!v.amount) v.amount = num(x.amount); if (!v.vendor) v.vendor = x.vendor || '';
+    if (!v.purpose) v.purpose = x.purposeHint || ''; if (!v.invoice) v.invoice = x.invoiceNumber || '';
+    if (x.paymentMethod) v.pay = x.paymentMethod;
+    it.receiptCount = x.receiptCount || 1; it.flags = multiFlags(v, x); it.status = 'ok';
+  }
+
+  function renderMulti() {
+    if (!M.items.length) return;
+    var done = M.items.filter(function (it) { return it.status === 'ok' || it.status === 'ng' || it.status === 'saved'; }).length;
+    var saved = M.items.filter(function (it) { return it.status === 'saved'; }).length;
+    $('#mCount').textContent = done < M.items.length ? M.items.length + '枚中 ' + done + '枚 読み取り済み' : M.items.length + '枚';
+    var box = $('#mList'); box.innerHTML = '';
+    M.items.forEach(function (it, idx) {
+      var v = it.vals, p = v.date ? parts(v.date) : null, busy = it.status === 'wait' || it.status === 'reading' || it.status === 'saving';
+      var pills = [];
+      if (it.status === 'wait') pills.push('<span class="pill busy">順番待ち</span>');
+      else if (it.status === 'reading') pills.push('<span class="pill busy">' + (it.wait ? 'AIが混雑中・' + it.wait + '秒後に再試行' : '読み取り中…') + '</span>');
+      else if (it.status === 'saving') pills.push('<span class="pill busy">保存中…</span>');
+      else if (it.status === 'saved') pills.push('<span class="pill done">保存済み</span>');
+      else {
+        if (it.status === 'ng') pills.push('<span class="pill ng">読み取れず・手で入力</span>');
+        else if (multiNeedsCheck(it)) pills.push('<span class="pill warn">' + (it.receiptCount > 1 ? '複数枚写っています' : '要確認') + '</span>');
+        if (multiDup(it, idx)) pills.push('<span class="pill warn">重複の疑い</span>');
+        if (it.saveError) pills.push('<span class="pill ng">保存できず</span>');
+      }
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'row-item' + (busy ? ' busy' : '');
+      b.innerHTML = '<span class="m-thumb">' + (it.isPdf ? 'PDF' : '<img alt="" src="' + it.url + '">') + '</span>' +
+        '<span class="row-main"><b>' + (p ? p.m + '/' + p.d + '　' : '') + esc(v.vendor || (busy ? '' : '（利用会社 未入力）')) + '</b>' +
+        '<span class="small' + (v.project ? '' : ' miss') + '">' + esc(v.project || (busy ? '' : '対象案件 未入力')) + '</span>' +
+        '<span class="pills">' + pills.join('') + '</span></span>' +
+        '<span class="row-amt">' + (v.amount ? yen(v.amount) + '円' : '') + '</span>';
+      b.addEventListener('click', function () { openMultiItem(idx); });
+      box.appendChild(b);
+    });
+    var left = multiUnsaved(), readyN = left.filter(function (it) { return it.status === 'ok' || it.status === 'ng'; }).filter(function (it) { return ready(it.vals); }).length;
+    var reading = M.items.some(function (it) { return it.status === 'wait' || it.status === 'reading'; });
+    var allSaved = !left.length;
+    $('#mBulk').hidden = allSaved; $('#mLead').hidden = allSaved;
+    $('#mDone').hidden = !saved; $('#mDoneTitle').textContent = saved + '枚を保存して、台帳に記録しました';
+    $('#btnMSave').hidden = allSaved; $('#btnMToBatch').hidden = !allSaved;
+    $('#btnMSave').disabled = M.saving || !readyN;
+    $('#btnMSave').textContent = M.saving ? '保存しています…' : 'まとめて保存（' + readyN + '枚）';
+    var notReady = left.filter(function (it) { return (it.status === 'ok' || it.status === 'ng') && !ready(it.vals); }).length;
+    $('#mNote').textContent = allSaved ? '' : reading ? '読み取りが終わったものから確かめられます' :
+      notReady ? notReady + '枚は入力が足りません（対象案件など）。タップして入れてください' : '';
+    $('#btnMHome').textContent = allSaved ? 'ホームへ戻る' : 'やめてホームへ戻る';
+  }
+
+  // 対象案件をまとめて入れる
+  function renderMultiCands() {
+    var seen = {}, list = [];
+    var add = function (s) { s = cleanTitle(s); if (s && !seen[s]) { seen[s] = 1; list.push(s); } };
+    (S.settings.favorites || []).forEach(add);
+    S.rows.slice().sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).forEach(function (r) { add(r.cells[C.project]); });
+    var box = $('#mCands'); box.innerHTML = '';
+    list.slice(0, 8).forEach(function (s) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = s; b.title = s;
+      b.setAttribute('aria-pressed', String($('#mProject').value.trim() === s));
+      b.addEventListener('click', function () { $('#mProject').value = s; renderMultiCands(); });
+      box.appendChild(b);
+    });
+  }
+  $('#mProject').addEventListener('input', function () { $$('#mCands .chip').forEach(function (b) { b.setAttribute('aria-pressed', String(b.textContent === $('#mProject').value.trim())); }); });
+  $('#btnMApply').addEventListener('click', function () {
+    var s = $('#mProject').value.trim(); if (!s) { toast('案件名を選ぶか入力してください', true); return; }
+    var n = 0; multiUnsaved().forEach(function (it) { if (it.status !== 'saving') { it.vals.project = s; n++; } });
+    renderMulti(); toast(n + '枚の対象案件を「' + s + '」にしました');
+  });
+
+  // 1枚を確認画面で直す（確認画面を使い回す。保存はせず、一覧に戻る）
+  function openMultiItem(idx) {
+    var it = M.items[idx]; if (!it) return;
+    if (it.status === 'wait' || it.status === 'reading' || it.status === 'saving') { toast('読み取りが終わるまでお待ちください'); return; }
+    if (it.status === 'saved') { toast('保存済みです。申請文は「まとめて申請」から作れます'); return; }
+    S.readSeq++; S.cur = it; S.multiEdit = true; S.multiIdx = idx;
+    $('[data-screen="confirm"]').classList.add('multi-edit');
+    var v = it.vals;
+    Object.keys(F).forEach(function (k) { var el = $(F[k]); el.value = k === 'amount' ? (v.amount ? yen(v.amount) : '') : (v[k] || ''); el.classList.remove('check'); });
+    if (!v.pay) $('#fPay').value = '不明';
+    var fl = it.flags || {};
+    $('#fDate').classList.toggle('check', !!fl.date); $('#fAmount').classList.toggle('check', !!fl.amount); $('#fPurpose').classList.toggle('check', !!fl.purpose);
+    $('#thumbPdf').hidden = !it.isPdf; $('#thumbImg').hidden = it.isPdf; if (!it.isPdf) $('#thumbImg').src = it.url;
+    $('#btnMultiBack').hidden = false;
+    show('confirm');
+    if (it.status === 'ng') setStatus2('ng', '読み取れませんでした', 'お手数ですが、写真を見ながら手で入れてください。' + (it.error ? '（' + it.error + '）' : ''));
+    else setStatus2('ok', (idx + 1) + '枚目', it.receiptCount > 1 ? '写真に' + it.receiptCount + '枚写っています。1枚ずつ読み取ると確実です。' : '黄色の欄はAIが自信のない項目です。写真と見比べてください。');
+    checkVendor(); loadEvents(); onFormChange();
+  }
+  /** 確認画面の内容を、まとめて読み取りの1枚に書き戻す */
+  function storeMultiItem() {
+    var it = S.cur; if (!S.multiEdit || !it) return;
+    it.vals = form();
+    it.flags = { date: $('#fDate').classList.contains('check'), amount: $('#fAmount').classList.contains('check'), purpose: $('#fPurpose').classList.contains('check'), vendor: $('#fVendor').classList.contains('check') };
+    if (it.ai && it.status === 'ng') it.status = 'ok';   // 確認画面で「もう一度読み取る」が成功した
+    it.saveError = '';
+  }
+  $('#btnMultiBack').addEventListener('click', function () {
+    storeMultiItem(); S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true;
+    S.readSeq++; S.cur = null; show('multi'); renderMulti();
+  });
+
+  // まとめて保存（1枚ずつ順番にドライブ＋台帳へ）
+  $('#btnMSave').addEventListener('click', async function () {
+    if (M.saving) return;
+    var todo = multiUnsaved().filter(function (it) { return (it.status === 'ok' || it.status === 'ng') && ready(it.vals); });
+    if (!todo.length) return;
+    var dups = todo.filter(function (it) { return multiDup(it, M.items.indexOf(it)); });
+    if (dups.length && !confirm('同じ立替日・金額の申請が、台帳か今回の中に既にあるものが' + dups.length + '枚あります。\n同じ領収書を2回送っていませんか？\n\n別の支払いで、含めて保存するなら「OK」\nその' + dups.length + '枚を除いて保存するなら「キャンセル」')) {
+      todo = todo.filter(function (it) { return dups.indexOf(it) < 0; });
+      if (!todo.length) return;
+    }
+    if (!S.settings.folder) { toast('最初に保存先フォルダを選んでください'); await pickFolder(); if (!S.settings.folder) return; }
+    M.saving = true; renderMulti();
+    var ok = 0, ng = 0, gen = M.gen;
+    try { await ensureToken(); } catch (e) { M.saving = false; renderMulti(); toast(errText(e), true); return; }
+    for (var i = 0; i < todo.length; i++) {
+      var it = todo[i]; if (gen !== M.gen) return;
+      it.status = 'saving'; renderMulti();
+      try {
+        S.cur = it;   // 保存の処理は S.cur の画像・形式を使う
+        it.saved = DEMO ? demoSave(it.vals) : await saveAll(it.vals);
+        it.status = 'saved'; it.saveError = ''; ok++;
+      } catch (e) { it.status = 'ok'; it.saveError = errText(e); ng++; noteError('まとめて保存', e); }
+      S.cur = null; renderMulti();
+    }
+    M.saving = false; renderMulti();
+    if (ng) toast(ok + '枚を保存しました。' + ng + '枚は保存できませんでした（もう一度「まとめて保存」を押してください）', true);
+    else toast(ok + '枚を保存して、台帳に記録しました');
+    window.scrollTo(0, 0);
+  });
+  $('#btnMHome').addEventListener('click', function () { if (canLeave()) goHome(); });
 
   // ============================================================ 3 保存完了・申請
   function openSaved(r) {

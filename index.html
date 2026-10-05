@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.1.4">
+<link rel="stylesheet" href="style.css?v=1.2.0">
 </head>
 <body>
 
@@ -100,7 +100,10 @@
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
       領収書を撮る
     </button>
-    <button type="button" class="link-btn" data-action="pick-file">写真・PDFを選ぶ</button>
+    <div class="link-row">
+      <button type="button" class="link-btn" data-action="pick-file">写真・PDFを選ぶ</button>
+      <button type="button" class="link-btn" data-action="pick-multi">まとめて読み取る（5枚まで）</button>
+    </div>
   </div>
 </section>
 
@@ -152,10 +155,39 @@
   </main>
   <div class="bottom-bar">
     <p class="note center" id="saveNote"></p>
+    <button type="button" class="btn btn-primary btn-lg" id="btnMultiBack" hidden>一覧に戻る</button>
     <button type="button" class="btn btn-primary btn-lg" id="btnSave" disabled>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
       保存する
     </button>
+  </div>
+</section>
+
+<!-- ============================================================ 2b まとめて読み取り -->
+<section data-screen="multi" class="screen" hidden>
+  <main class="wrap">
+    <div class="sec-head"><h1 class="h1s">まとめて読み取り</h1><span class="small" id="mCount"></span></div>
+    <p class="note" id="mLead">読み取りが終わった領収書から、タップして内容を確かめられます。黄色の印は確認が必要なものです。</p>
+
+    <section class="card pad col" id="mBulk" aria-label="対象案件をまとめて入れる">
+      <h2 class="h2s">対象案件をまとめて入れる</h2>
+      <div class="row-line"><input class="input grow" type="text" id="mProject" autocomplete="off" placeholder="候補から選ぶか、入力してください"><button type="button" class="btn btn-sm btn-outline" id="btnMApply">全部に入れる</button></div>
+      <div class="chips" id="mCands"></div>
+      <span class="hint">1枚ずつ違う案件のときは、下の一覧からタップして直してください。</span>
+    </section>
+
+    <div class="card list" id="mList"></div>
+
+    <section class="card pad col" id="mDone" hidden>
+      <h2 class="h2s" id="mDoneTitle"></h2>
+      <p class="note">台帳に「未申請」で記録しました。続けて「まとめて申請」で、まとめた申請文を作れます。</p>
+    </section>
+  </main>
+  <div class="bottom-bar">
+    <p class="note center" id="mNote"></p>
+    <button type="button" class="btn btn-primary btn-lg" id="btnMSave" disabled>まとめて保存</button>
+    <button type="button" class="btn btn-primary btn-lg" id="btnMToBatch" data-action="batch" hidden>まとめて申請へ進む</button>
+    <button type="button" class="link-btn" id="btnMHome">ホームへ戻る</button>
   </div>
 </section>
 
@@ -211,9 +243,10 @@
       </div>
     </details>
   </main>
-  <div class="bottom-bar row">
+  <div class="bottom-bar row wrap2">
     <button type="button" class="btn btn-md grow" data-action="shoot">続けて撮る</button>
-    <button type="button" class="btn btn-md grow" data-action="home">ホームへ</button>
+    <button type="button" class="btn btn-md grow" data-action="pick-file">写真・PDFを選ぶ</button>
+    <button type="button" class="link-btn full" data-action="home">ホームへ戻る</button>
   </div>
 </section>
 
@@ -287,6 +320,7 @@
       <ul class="tips">
         <li>明るい場所で、領収書1枚だけを画面いっぱいに撮る</li>
         <li>2枚以上を一度に撮らない（いちばん大きい1枚しか読みません）</li>
+        <li>出張などで何枚もあるときは、先にカメラで1枚ずつ撮っておき、ホームの「まとめて読み取る」で写真を選ぶ（5枚まで。対象案件はまとめて入れられます）</li>
         <li>長いレシートは、合計金額と日付が入るように撮る</li>
         <li>読めなかった欄は黄色になります。推測では埋めないので、写真を見て入れてください</li>
       </ul>
@@ -350,10 +384,11 @@
 
 <input type="file" id="fileShoot" accept="image/*" capture="environment" hidden>
 <input type="file" id="filePick" accept="image/*,application/pdf" hidden>
+<input type="file" id="fileMulti" accept="image/*,application/pdf" multiple hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.1.4"></script>
+<script src="config.js?v=1.2.0"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.1.4"></script>
+<script src="app.js?v=1.2.0"></script>
 </body>
 </html>
