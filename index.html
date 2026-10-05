@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.1.3">
+<link rel="stylesheet" href="style.css?v=1.1.4">
 </head>
 <body>
 
@@ -113,6 +113,7 @@
         <div id="readStatus" class="read-status"></div>
         <div class="row-btns">
           <button type="button" class="btn btn-sm" data-action="reshoot">撮り直す</button>
+          <button type="button" class="btn btn-sm" data-action="pick-file">写真・PDFを選び直す</button>
           <button type="button" class="btn btn-sm" id="btnRetryRead" hidden>もう一度読み取る</button>
         </div>
       </div>
@@ -351,8 +352,8 @@
 <input type="file" id="filePick" accept="image/*,application/pdf" hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.1.3"></script>
+<script src="config.js?v=1.1.4"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.1.3"></script>
+<script src="app.js?v=1.1.4"></script>
 </body>
 </html>

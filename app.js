@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.1.3';
+  var VERSION = '1.1.4';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
