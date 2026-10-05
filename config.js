@@ -7,9 +7,9 @@
  *   slackChannelUrl : 「Slackを開く」で開く立替精算チャンネル（ワークスペース名入りの住所にする）
  */
 window.RECEIPT_CONFIG = {
-  clientId: 'ここにクライアントIDを貼る',
-  apiUrl: 'ここに裏側APIのURLを貼る',
-  pickerApiKey: 'ここにフォルダ選択用のAPIキーを貼る',
+  clientId: '587982494338-389rmsmd5b20ogu2is01ujh8bdlr9571.apps.googleusercontent.com',
+  apiUrl: 'https://script.google.com/macros/s/AKfycbzDYatzSwgIHU1GD7hQO80Oxulcbfm6fmHg6MHUmp4uo8hjZN8RENlqpk_a-OU0ABh-/exec',
+  pickerApiKey: 'AIzaSyAD6DNSxCTQldViOLVOD3I0fEpIPA6_icI',
   allowedDomain: 'replayce.co.jp',
   slackChannelUrl: 'https://replayce.slack.com/archives/C08J736MX5H',
   ledgerPrefix: '立替金精算台帳_'
