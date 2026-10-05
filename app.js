@@ -16,13 +16,13 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.0';
+  var VERSION = '1.2.1';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
   var ALL = 'supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives';
   var BUSY_RE = /high demand|overloaded|UNAVAILABLE|RESOURCE_EXHAUSTED|quota|→429|→503|HTTP 429|HTTP 503/i;
-  var AUTO_RETRY_SEC = [60, 120];
+  var AUTO_RETRY_SEC = [15];   // 混雑時の自動やり直しは1回だけ（裏側が30秒で打ち切るので、長くても1分ほどで結果が出る）
   var PREFIX = CFG.ledgerPrefix || '立替金精算台帳_';
   var SLACK_URL = CFG.slackChannelUrl || 'https://replayce.slack.com/archives/C08J736MX5H';
   var HEADER = ['申請ID', '登録日時', '立替日', '対象月', '対象案件', '利用会社', '用途', 'インボイス登録番号', '金額（税込・円）', '支払方法', '読取ステータス', '申請状態', '申請日', '申請文', '領収書ファイル名', '領収書のリンク', '備考'];
@@ -522,9 +522,11 @@
   async function read() {
     var seq = S.readSeq, b64 = await toBase64(S.cur.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
-      setStatus2('busy', '読み取り中…', 'ふつう5秒ほどで終わります。待たずに手で入れても構いません。');
+      var tStart = Date.now(), msg = function () { setStatus2('busy', '読み取り中… ' + Math.round((Date.now() - tStart) / 1000) + '秒', 'ふつう5〜10秒で終わります。待たずに手で入れても構いません。'); };
+      msg(); var timer = setInterval(function () { if (seq === S.readSeq) msg(); }, 1000);
       var r;
       try { r = await api('read', { file: b64, mimeType: S.cur.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
+      clearInterval(timer);
       if (seq !== S.readSeq) return;
       S.cur.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
       if (r.ok && r.result) { S.cur.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; S.cur.stats.model = r.model || ''; fillFromAi(r.result); return; }
@@ -535,7 +537,7 @@
       }
       for (var left = AUTO_RETRY_SEC[i]; left > 0; left--) {
         if (seq !== S.readSeq) return;
-        setStatus2('busy', 'AIが混み合っています', left + '秒後に自動でやり直します。待たずに手で入れても構いません。');
+        setStatus2('busy', 'AIが混み合っています', left + '秒後にもう一度だけ読み取ります。待たずに手で入れても構いません。');
         await sleep(1000);
       }
     }
@@ -703,8 +705,10 @@
     catch (e) { it.status = 'ng'; it.error = errText(e); renderMulti(); return; }
     var b64 = await toBase64(it.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
-      var r;
+      var r, tStart = Date.now(); it.elapsed = 0;
+      var timer = setInterval(function () { if (gen === M.gen) { it.elapsed = Math.round((Date.now() - tStart) / 1000); renderMulti(); } }, 1000);
       try { r = await api('read', { file: b64, mimeType: it.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
+      clearInterval(timer); it.elapsed = 0;
       if (gen !== M.gen) return;
       it.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
       if (r.ok && r.result) { it.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; it.stats.model = r.model || ''; applyAi(it, r.result); renderMulti(); return; }
@@ -733,7 +737,7 @@
       var v = it.vals, p = v.date ? parts(v.date) : null, busy = it.status === 'wait' || it.status === 'reading' || it.status === 'saving';
       var pills = [];
       if (it.status === 'wait') pills.push('<span class="pill busy">順番待ち</span>');
-      else if (it.status === 'reading') pills.push('<span class="pill busy">' + (it.wait ? 'AIが混雑中・' + it.wait + '秒後に再試行' : '読み取り中…') + '</span>');
+      else if (it.status === 'reading') pills.push('<span class="pill busy">' + (it.wait ? 'AIが混雑中・' + it.wait + '秒後に再試行' : '読み取り中…' + (it.elapsed ? ' ' + it.elapsed + '秒' : '')) + '</span>');
       else if (it.status === 'saving') pills.push('<span class="pill busy">保存中…</span>');
       else if (it.status === 'saved') pills.push('<span class="pill done">保存済み</span>');
       else {
