@@ -1,5 +1,6 @@
 /**
- * 領収書アプリ v1.0.0（Step 1：撮る → 読み取り・確認 → 保存・台帳 → その場で申請）
+ * 領収書アプリ v1.1.0（Step 2〜4：まとめて申請・マイページ・使い方・不具合の送信・試行の感想）
+ * v1.0.0（Step 1：撮る → 読み取り・確認 → 保存・台帳 → その場で申請）
  * 画面：GitHub Pages 上の1ページ。裏側：GAS「領収書アプリ_API」（Gemini の窓口）。
  *
  * 守っていること
@@ -15,7 +16,8 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
+  var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
   var ALL = 'supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives';
@@ -29,7 +31,11 @@
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var S = { user: null, google: { token: '', exp: 0 }, session: '', settings: { folder: null }, settingsFileId: null, rows: [], ledgers: {}, cur: null, saved: null, screen: 'login', readSeq: 0 };
+  var S = { user: null, google: { token: '', exp: 0 }, session: '', settings: Object.assign({}, DEFAULT_SETTINGS), settingsFileId: null, rows: [], ledgers: {}, cur: null, saved: null, screen: 'login', readSeq: 0 };
+  var lastErrors = [];
+  function noteError(where, e) { lastErrors.push({ t: new Date().toISOString(), where: where, msg: String(errText(e)).slice(0, 300) }); if (lastErrors.length > 8) lastErrors.shift(); }
+  window.addEventListener('error', function (e) { noteError('画面', e.message); });
+  window.addEventListener('unhandledrejection', function (e) { noteError('処理', e.reason); });
 
   // ============================================================ 小道具
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -48,6 +54,7 @@
   function cleanTitle(s) { return String(s || '').replace(/【[^】]*】|［[^］]*］|\[[^\]]*\]/g, ' ').replace(/[\s　]+/g, ' ').trim(); }
   var toastTimer = null;
   function toast(msg, ng) {
+    if (ng) noteError(S.screen, msg);
     var t = $('#toast'); t.textContent = msg; t.className = 'toast' + (ng ? ' ng' : ''); t.hidden = false;
     clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, ng ? 7000 : 3500);
   }
@@ -72,13 +79,14 @@
     b.addEventListener('click', function () {
       var to = b.dataset.nav; closeMenu();
       if (to === 'logout') logout();
-      else if (to === 'folder') pickFolder();
-      else if (to === 'ledger') openLedger();
-      else if (canLeave()) goHome();
+      else if (canLeave()) go(to);
     });
   });
+  function go(to) {
+    if (to === 'batch') openBatch(); else if (to === 'mypage') openMy(); else if (to === 'help') show('help'); else goHome();
+  }
   $('#brandHome').addEventListener('click', function (e) { e.preventDefault(); if (canLeave()) goHome(); });
-  $('#verLabel').textContent = 'v' + VERSION;
+  $('#verLabel').textContent = 'v' + VERSION; $('#verLabel2').textContent = 'v' + VERSION;
   function canLeave() {
     if (S.screen === 'confirm' && S.cur && !S.cur.saved && !confirm('まだ保存していません。この領収書を破棄して移動しますか？')) return false;
     return true;
@@ -130,7 +138,7 @@
   function logout() {
     if (!canLeave()) return;
     if (window.google && google.accounts && google.accounts.oauth2 && S.google.token && !DEMO) { try { google.accounts.oauth2.revoke(S.google.token, function () {}); } catch (e) {} }
-    S.google = { token: '', exp: 0 }; S.session = ''; S.user = null; S.settings = { folder: null }; S.settingsFileId = null; S.rows = []; S.ledgers = {}; S.cur = null; S.saved = null;
+    S.google = { token: '', exp: 0 }; S.session = ''; S.user = null; S.settings = Object.assign({}, DEFAULT_SETTINGS); S.settingsFileId = null; S.rows = []; S.ledgers = {}; S.cur = null; S.saved = null;
     show('login');
   }
 
@@ -167,11 +175,11 @@
 
   // ============================================================ 設定（ドライブのアプリ専用領域 settings.json）
   function loadSettings() {
-    if (DEMO) { S.settings = { folder: { id: 'demo', name: '稼働（見本）' } }; return Promise.resolve(); }
+    if (DEMO) { S.settings = Object.assign({}, DEFAULT_SETTINGS, { folder: { id: 'demo', name: '稼働（見本）' }, favorites: ['横須賀市：定例会'] }); return Promise.resolve(); }
     return gfetch(DRIVE + '/files?spaces=appDataFolder&fields=files(id)&q=' + encodeURIComponent("name='receipt-settings.json'")).then(function (j) {
       var f = (j.files || [])[0]; if (!f) return;
       S.settingsFileId = f.id;
-      return gfetch(DRIVE + '/files/' + f.id + '?alt=media').then(function (s) { if (s) S.settings = Object.assign({ folder: null }, s); });
+      return gfetch(DRIVE + '/files/' + f.id + '?alt=media').then(function (s) { if (s) S.settings = Object.assign({}, DEFAULT_SETTINGS, s); });
     }).catch(function () {});
   }
   function saveSettings() {
@@ -194,7 +202,7 @@
     return pickerReady;
   }
   function pickFolder() {
-    if (DEMO) { S.settings.folder = { id: 'demo', name: '稼働（見本）' }; toast('保存先を「稼働（見本）」にしました'); goHome(); return Promise.resolve(); }
+    if (DEMO) { S.settings.folder = { id: 'demo', name: '稼働（見本）' }; toast('保存先を「稼働（見本）」にしました'); if (S.screen === 'mypage') openMy(); else goHome(); return Promise.resolve(); }
     if (!CFG.pickerApiKey || /ここに/.test(CFG.pickerApiKey)) { toast('フォルダ選択の設定（config.js の pickerApiKey）が未記入です。管理者に連絡してください', true); return Promise.resolve(); }
     return ensureToken().then(loadPicker).then(function () {
       return new Promise(function (resolve) {
@@ -211,7 +219,7 @@
             gfetch(DRIVE + '/files/' + id + '?supportsAllDrives=true&fields=id,name,driveId,capabilities(canAddChildren)').then(function (f) {
               if (f.capabilities && f.capabilities.canAddChildren === false) { toast('このフォルダには保存する権限がありません。別のフォルダを選んでください', true); return; }
               S.settings.folder = { id: f.id, name: f.name, driveId: f.driveId || '' }; S.ledgers = {};
-              return saveSettings().then(function () { toast('保存先を「' + f.name + '」にしました'); if (S.screen === 'home') goHome(); else updatePreview(); });
+              return saveSettings().then(function () { toast('保存先を「' + f.name + '」にしました'); if (S.screen === 'home') goHome(); else if (S.screen === 'mypage') openMy(); else updatePreview(); });
             }).catch(function (e) { toast('フォルダを確認できませんでした：' + errText(e), true); }).then(resolve);
           });
         if (P.Feature && P.Feature.SUPPORT_DRIVES) b.enableFeature(P.Feature.SUPPORT_DRIVES);
@@ -255,7 +263,7 @@
   function rangeUrl(ssId, range) { return SHEETS + ssId + '/values/' + encodeURIComponent(range); }
   /** 今年（1月は去年も）の台帳を全部読む */
   function loadRows() {
-    if (DEMO) { S.rows = demoRows(); return Promise.resolve(); }
+    if (DEMO) { S.rows = S.demoRows || (S.demoRows = demoRows()); return Promise.resolve(); }
     if (!S.settings.folder) { S.rows = []; return Promise.resolve(); }
     var now = new Date(), years = [now.getFullYear()]; if (now.getMonth() === 0) years.push(now.getFullYear() - 1);
     var rows = [];
@@ -324,6 +332,7 @@
     var total = wait.reduce(function (s, r) { return s + num(r.cells[C.amount]); }, 0);
     $('#sumCount').textContent = wait.length; $('#sumTotal').textContent = yen(total);
     $('#sumEmpty').hidden = wait.length > 0 || !S.settings.folder;
+    $('#btnToBatch').hidden = wait.length < 1;
     var old = wait.map(function (r) { return r.cells[C.date]; }).filter(Boolean).sort()[0];
     if (old) {
       var p = parts(old), days = Math.floor((new Date(isoDate(new Date())) - new Date(old)) / 864e5);
@@ -349,7 +358,7 @@
   $$('[data-action="pick-file"]').forEach(function (b) { b.addEventListener('click', function () { $('#filePick').value = ''; $('#filePick').click(); }); });
   $$('[data-action="pick-folder"]').forEach(function (b) { b.addEventListener('click', pickFolder); });
   $$('[data-action="home"]').forEach(function (b) { b.addEventListener('click', function () { goHome(); }); });
-  ['#fileShoot', '#filePick'].forEach(function (sel) { $(sel).addEventListener('change', function () { var f = this.files && this.files[0]; if (f) startConfirm(f); }); });
+  ['#fileShoot', '#filePick'].forEach(function (sel) { $(sel).addEventListener('change', function () { var f = this.files && this.files[0]; if (f) startConfirm(f, sel === '#fileShoot' ? '撮影' : '選択'); }); });
 
   /** 画像は長辺1600pxのJPEGに縮める（文字が読める大きさ）。PDFはそのまま */
   function prepare(file) {
@@ -373,10 +382,10 @@
   function fv(k) { return $(F[k]).value.trim(); }
   function form() { return { date: fv('date'), amount: num(fv('amount')), project: fv('project'), vendor: fv('vendor'), purpose: fv('purpose'), pay: fv('pay'), invoice: fv('invoice') }; }
 
-  function startConfirm(file) {
+  function startConfirm(file, source) {
     S.readSeq++;
     if (S.cur && S.cur.url) URL.revokeObjectURL(S.cur.url);
-    S.cur = { file: file, ai: null, saved: false, events: [] };
+    S.cur = { file: file, ai: null, saved: false, events: [], stats: { source: source || '', type: file.type === 'application/pdf' ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } };
     Object.keys(F).forEach(function (k) { var el = $(F[k]); if (k !== 'pay') el.value = ''; el.classList.remove('check'); });
     $('#fPay').value = '不明'; $('#dupWarn').hidden = true; $('#vendorHint').classList.remove('warn');
     var isPdf = file.type === 'application/pdf';
@@ -396,13 +405,15 @@
   $('#btnRetryRead').addEventListener('click', function () { if (S.cur && S.cur.blob) read(); });
 
   async function read() {
-    var seq = S.readSeq, b64 = await toBase64(S.cur.blob);
+    var seq = S.readSeq, b64 = await toBase64(S.cur.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
       setStatus2('busy', '読み取り中…', 'ふつう5秒ほどで終わります。待たずに手で入れても構いません。');
       var r;
       try { r = await api('read', { file: b64, mimeType: S.cur.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
       if (seq !== S.readSeq) return;
-      if (r.ok && r.result) { fillFromAi(r.result); return; }
+      S.cur.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
+      if (r.ok && r.result) { S.cur.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; S.cur.stats.model = r.model || ''; fillFromAi(r.result); return; }
+      noteError('読み取り', r.error || '');
       if (!BUSY_RE.test(r.error || '') || i === AUTO_RETRY_SEC.length) {
         setStatus2('ng', '読み取れませんでした', 'お手数ですが、写真を見ながら手で入れてください。（' + String(r.error || '').slice(0, 80) + '）');
         return;
@@ -448,8 +459,9 @@
     var seen = {}, list = [];
     var add = function (s) { s = cleanTitle(s); if (s && !seen[s]) { seen[s] = 1; list.push(s); } };
     (S.cur && S.cur.events || []).forEach(add);
+    (S.settings.favorites || []).forEach(add);
     S.rows.slice().sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).forEach(function (r) { add(r.cells[C.project]); });
-    list = list.slice(0, 6);
+    list = list.slice(0, 8);
     var d = fv('date'), p = d ? parts(d) : null;
     $('#candNote').textContent = list.length ? (p ? p.m + '月' + p.d + '日の予定と、過去の申請から' : '過去の申請から') : '';
     var box = $('#candList'); box.innerHTML = '';
@@ -472,7 +484,7 @@
   function updatePreview() {
     var f = form(), ok = ready(f);
     $('#pvName').textContent = ok ? fileName(f) : '—';
-    if (f.date && f.project) { var p = parts(f.date); $('#pvPath').textContent = (S.settings.folder ? S.settings.folder.name + ' › ' : '') + p.y + '年' + p.m + '月稼働 › 経費領収書：' + p.m + '/' + p.d + '_' + f.project; }
+    if (f.date && f.project) { var p = parts(f.date); $('#pvPath').textContent = (S.settings.folder ? S.settings.folder.name + ' › ' : '') + p.y + '年' + p.m + '月稼働' + (S.settings.split !== 'month' ? ' › 経費領収書：' + p.m + '/' + p.d + '_' + f.project : ''); }
     else $('#pvPath').textContent = '—';
     var missing = [['date', '立替日'], ['amount', '金額'], ['vendor', '利用会社'], ['purpose', '用途'], ['project', '対象案件']].filter(function (k) { return !f[k[0]]; }).map(function (k) { return k[1]; });
     $('#saveNote').textContent = missing.length ? missing.join('・') + 'を入れると保存できます' : (S.settings.folder ? '' : '保存するときに保存先フォルダを選びます');
@@ -510,9 +522,11 @@
   async function saveAll(f) {
     var p = parts(f.date), tab = p.y + '-' + pad(p.m);
     var month = await monthFolder(p.y, p.m);
-    var rName = '経費領収書：' + p.m + '/' + p.d + '_' + f.project;
-    var rList = await listChildren(month.id, "mimeType='application/vnd.google-apps.folder' and name='" + qName(rName) + "'");
-    var rFolder = rList[0] || await createFolder(rName, month.id);
+    var rName = '経費領収書：' + p.m + '/' + p.d + '_' + f.project, rFolder = month;
+    if (S.settings.split !== 'month') {   // 標準：月の稼働フォルダの中に「経費領収書：日付_案件名」フォルダを作る
+      var rList = await listChildren(month.id, "mimeType='application/vnd.google-apps.folder' and name='" + qName(rName) + "'");
+      rFolder = rList[0] || await createFolder(rName, month.id);
+    }
     var base = fileName(f), dot = base.lastIndexOf('.'), stem = base.slice(0, dot), name = base;
     var same = await listChildren(rFolder.id, "name contains '" + qName(stem) + "'");
     for (var n = 2; same.some(function (x) { return x.name === name; }); n++) name = stem + '_' + n + base.slice(dot);
@@ -527,7 +541,7 @@
     var row = [id, stamp(), f.date, tab, f.project, f.vendor, f.purpose, f.invoice, f.amount, f.pay, !ai ? '手入力' : edited ? '一部手直し' : 'AIのまま', '未申請', '', claim, up.name, up.webViewLink, ''];
     await jsonPost(rangeUrl(L.id, "'" + tab + "'!A:Q") + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', { values: [row] });
     S.rows.push({ ssId: L.id, tab: tab, cells: row.map(String) });
-    return { id: id, ssId: L.id, tab: tab, claim: claim, status: '未申請', fileName: up.name, fileUrl: up.webViewLink, path: S.settings.folder.name + ' › ' + month.name + ' › ' + rName, fresh: true };
+    return { id: id, ssId: L.id, tab: tab, claim: claim, status: '未申請', fileName: up.name, fileUrl: up.webViewLink, path: S.settings.folder.name + ' › ' + month.name + (S.settings.split !== 'month' ? ' › ' + rName : ''), fresh: true, readStatus: row[10] };
   }
 
   // ============================================================ 3 保存完了・申請
@@ -544,6 +558,8 @@
     $('#linkLedger').href = ledgerUrl(s.ssId);
     $('#claimBox').innerHTML = claimHtml(s.claim);
     renderStep(s.status === '申請済み' ? 'done' : 'copy');
+    // 試行の感想欄は、いま保存した1件のときだけ出す（閉じた状態・空欄で）
+    $('#fbCard').hidden = !s.fresh; $('#fbCard').open = false; $('#fbText').value = ''; $('#fbMin').value = ''; fbRating = 0; paintStars();
   }
   function renderStep(step) {
     S.saved.step = step;
@@ -585,6 +601,151 @@
   });
   $$('[data-action="later"]').forEach(function (b) { b.addEventListener('click', function () { toast('台帳に「未申請」で残しました。ホームの件数から確かめられます'); goHome(); }); });
 
+  // ============================================================ 共通のボタン（data-action）
+  $$('[data-action="batch"]').forEach(function (b) { b.addEventListener('click', function () { openBatch(); }); });
+  $$('[data-action="ledger"]').forEach(function (b) { b.addEventListener('click', openLedger); });
+  $$('[data-action="help"]').forEach(function (b) { b.addEventListener('click', function () { show('help'); }); });
+  $$('[data-action="report"]').forEach(function (b) { b.addEventListener('click', function () { openReport(); }); });
+  $$('[data-action="logout"]').forEach(function (b) { b.addEventListener('click', logout); });
+
+  // ============================================================ 4 まとめて申請
+  var B = { list: [], off: {}, copied: false };
+  function openBatch() {
+    show('batch'); B.off = {}; B.copied = false; $('#bList').innerHTML = '<p class="note pad">読み込み中…</p>';
+    loadRows().then(renderBatch).catch(function (e) { toast('台帳を読み込めませんでした：' + errText(e), true); renderBatch(); });
+  }
+  function renderBatch() {
+    B.list = S.rows.filter(function (r) { return r.cells[C.status] === '未申請'; })
+      .sort(function (a, b) { return String(a.cells[C.date]).localeCompare(String(b.cells[C.date])) || String(a.cells[C.at]).localeCompare(String(b.cells[C.at])); });
+    var box = $('#bList'); box.innerHTML = '';
+    $('#bEmpty').hidden = B.list.length > 0; box.hidden = !B.list.length; $('#bPreviewCard').hidden = !B.list.length;
+    B.list.forEach(function (r) {
+      var c = r.cells, p = parts(c[C.date] || ''), id = c[C.id];
+      var lab = document.createElement('label'); lab.className = 'check-item';
+      lab.innerHTML = '<input type="checkbox"' + (B.off[id] ? '' : ' checked') + '>' +
+        '<span class="row-main"><b>' + (p.m || '-') + '/' + (p.d || '-') + '　' + esc(c[C.vendor]) + '</b><span class="small">' + esc(c[C.project]) + '</span></span>' +
+        '<span class="row-amt">' + yen(num(c[C.amount])) + '円</span>';
+      lab.querySelector('input').addEventListener('change', function () { B.off[id] = !this.checked; B.copied = false; updateBatch(); });
+      box.appendChild(lab);
+    });
+    updateBatch();
+  }
+  function batchChosen() { return B.list.filter(function (r) { return !B.off[r.cells[C.id]]; }); }
+  function batchText() { return batchChosen().map(function (r) { return r.cells[C.claim] || ''; }).filter(Boolean).join('\n———\n'); }
+  function updateBatch() {
+    var ch = batchChosen(), total = ch.reduce(function (s, r) { return s + num(r.cells[C.amount]); }, 0);
+    $('#bCount').textContent = ch.length; $('#bCount2').textContent = ch.length; $('#bTotal').textContent = yen(total);
+    $('#bPreview').innerHTML = ch.length ? claimHtml(batchText()) : '<span class="note">申請するものを選んでください</span>';
+    var old = ch.map(function (r) { return r.cells[C.date]; }).filter(Boolean).sort()[0];
+    if (old) {
+      var days = Math.floor((new Date(isoDate(new Date())) - new Date(old)) / 864e5), p = parts(old);
+      $('#bOld').textContent = p.m + '月' + p.d + '日の分は' + days + '日たっています。経理のルールは「月末まで溜めず、その都度」です。';
+      $('#bOld').hidden = days < 7;
+    } else $('#bOld').hidden = true;
+    $('#btnBatchCopy').hidden = B.copied; $('#btnBatchCopy').disabled = !ch.length;
+    $('#btnBatchMark').hidden = !B.copied; $('#btnBatchRecopy').hidden = !B.copied;
+  }
+  function batchCopyOpen() {
+    if (!batchChosen().length) return;
+    copyClaim(batchText()).then(function () { toast('まとめた申請文をコピーしました'); });
+    window.open(SLACK_URL, '_blank', 'noopener');
+    B.copied = true; updateBatch();
+  }
+  $('#btnBatchCopy').addEventListener('click', batchCopyOpen);
+  $('#btnBatchRecopy').addEventListener('click', batchCopyOpen);
+  $('#btnBatchMark').addEventListener('click', function () {
+    var ch = batchChosen(), btn = this; if (!ch.length) return; btn.disabled = true;
+    (DEMO ? Promise.resolve() : ensureToken().then(function () { return setStatusMany(ch, '申請済み'); })).then(function () {
+      var today = isoDate(new Date());
+      ch.forEach(function (r) { r.cells[C.status] = '申請済み'; r.cells[C.claimedOn] = today; });
+      toast(ch.length + '件を「申請済み」にしました'); goHome();
+    }).catch(function (e) { toast('台帳を書き換えられませんでした：' + errText(e), true); }).then(function () { btn.disabled = false; });
+  });
+  /** 複数の行をまとめて書き換える。シートごとにA列を1回だけ読み、申請IDで行を探す */
+  async function setStatusMany(rows, status) {
+    var groups = {};
+    rows.forEach(function (r) { var k = r.ssId + '\t' + r.tab; (groups[k] = groups[k] || []).push(r.cells[C.id]); });
+    for (var k in groups) {
+      var ssId = k.split('\t')[0], tab = k.split('\t')[1];
+      var j = await gfetch(rangeUrl(ssId, "'" + tab + "'!A:A")), ids = (j.values || []).map(function (r) { return r[0]; });
+      var data = groups[k].map(function (id) {
+        var idx = ids.indexOf(id); if (idx < 0) throw new Error('台帳に見つからない申請があります（' + id + '）');
+        return { range: "'" + tab + "'!L" + (idx + 1) + ':M' + (idx + 1), values: [[status, status === '申請済み' ? isoDate(new Date()) : '']] };
+      });
+      await jsonPost(SHEETS + ssId + '/values:batchUpdate', { valueInputOption: 'RAW', data: data });
+    }
+  }
+
+  // ============================================================ 5 マイページ
+  function openMy() {
+    show('mypage');
+    $('#myName').textContent = S.user ? S.user.name : ''; $('#myEmail').textContent = S.user ? S.user.email : ''; $('#myInitial').textContent = S.user ? S.user.name.slice(0, 1) : '?';
+    $('#myFolder').textContent = S.settings.folder ? S.settings.folder.name : '未設定（最初に選んでください）';
+    $$('input[name="split"]').forEach(function (r) { r.checked = r.value === (S.settings.split || 'standard'); });
+    renderFavs();
+  }
+  $$('input[name="split"]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      S.settings.split = this.value;
+      saveSettings().then(function () { toast(S.settings.split === 'month' ? '月の稼働フォルダに直接保存します' : '月の稼働フォルダの中に「経費領収書：日付_案件名」フォルダを作って保存します'); })
+        .catch(function (e) { toast('設定を保存できませんでした：' + errText(e), true); });
+    });
+  });
+  function renderFavs() {
+    var box = $('#favList'); box.innerHTML = '';
+    var favs = S.settings.favorites || [];
+    if (!favs.length) { box.innerHTML = '<span class="note">まだありません</span>'; return; }
+    favs.forEach(function (s, i) {
+      var b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.title = '「' + s + '」を外す';
+      b.innerHTML = esc(s) + '<span class="x" aria-hidden="true">×</span>'; b.setAttribute('aria-label', s + ' を外す');
+      b.addEventListener('click', function () { favs.splice(i, 1); S.settings.favorites = favs; saveSettings(); renderFavs(); });
+      box.appendChild(b);
+    });
+  }
+  $('#btnFavAdd').addEventListener('click', function () {
+    var v = $('#favInput').value.trim(); if (!v) return;
+    var favs = (S.settings.favorites || []).filter(function (x) { return x !== v; });
+    favs.unshift(v); S.settings.favorites = favs.slice(0, 10); $('#favInput').value = '';
+    saveSettings().then(function () { toast('「' + v + '」を追加しました'); }).catch(function (e) { toast('保存できませんでした：' + errText(e), true); });
+    renderFavs();
+  });
+  $('#favInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#btnFavAdd').click(); } });
+
+  // ============================================================ 不具合・要望の送信（宛先は裏側GASで固定。診断情報だけを送る）
+  function diagnostics() {
+    var ua = navigator.userAgent;
+    return { app: VERSION, screen: S.screen, ua: ua, device: /iPhone|iPad|Android/.test(ua) ? 'スマホ' : 'PC', folderSet: !!S.settings.folder, split: S.settings.split, rows: S.rows.length, errors: lastErrors.slice() };
+  }
+  function openReport() {
+    closeMenu(); var d = $('#reportDlg'); $('#repText').value = '';
+    if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function closeReport() { var d = $('#reportDlg'); if (d.close) d.close(); else d.removeAttribute('open'); }
+  $('#btnRepCancel').addEventListener('click', closeReport);
+  $('#btnRepSend').addEventListener('click', function () {
+    var text = $('#repText').value.trim(), btn = this;
+    if (!text) { toast('内容を書いてください', true); return; }
+    btn.disabled = true;
+    api('report', { kind: lastErrors.length ? 'error' : 'feedback', screen: S.screen, message: text.slice(0, 60), comment: text, detail: diagnostics() }).then(function (r) {
+      if (!r.ok) throw new Error(r.error || '送れませんでした');
+      closeReport(); toast('管理者に送りました。ありがとうございます');
+    }).catch(function (e) { toast('送れませんでした：' + errText(e), true); }).then(function () { btn.disabled = false; });
+  });
+
+  // ============================================================ 試行の感想（裏側GASが管理者のスプレッドシートに1行記録）
+  var fbRating = 0;
+  function paintStars() { $$('#fbStars button').forEach(function (b) { b.setAttribute('aria-checked', String(Number(b.dataset.v) === fbRating)); }); }
+  $$('#fbStars button').forEach(function (b) { b.addEventListener('click', function () { fbRating = Number(b.dataset.v); paintStars(); }); });
+  $('#btnFb').addEventListener('click', function () {
+    if (!fbRating) { toast('使い心地（1〜5）を選んでください', true); return; }
+    var st = (S.cur && S.cur.stats) || {}, btn = this; btn.disabled = true;
+    var stats = { app: VERSION, device: /iPhone|iPad|Android/.test(navigator.userAgent) ? 'スマホ' : 'PC', source: st.source, type: st.type, readSec: st.readSec, retries: st.retries, model: st.model, readStatus: S.saved && S.saved.readStatus || '' };
+    api('feedback', { rating: fbRating, savedMin: num($('#fbMin').value) || '', comment: $('#fbText').value.trim(), stats: stats }).then(function (r) {
+      if (!r.ok) throw new Error(r.error || '送れませんでした');
+      $('#fbCard').hidden = true; toast('感想を記録しました。ありがとうございます');
+    }).catch(function (e) { toast('送れませんでした：' + errText(e), true); }).then(function () { btn.disabled = false; });
+  });
+
   // ============================================================ 見本モード（?demo=1）
   function demoRows() {
     var mk = function (id, at, date, project, vendor, purpose, amount, status) {
@@ -599,13 +760,14 @@
   }
   function demoApi(action) {
     if (action === 'login') return Promise.resolve({ ok: true, email: 'demo.user@replayce.co.jp', session: 'demo' });
-    if (action === 'read') return sleep(1500).then(function () { return { ok: true, result: { receiptCount: 1, docType: 'レシート', date: '2026-09-26', vendor: 'ファミリーマート', amount: 1220, paymentMethod: 'QR決済', invoiceNumber: 'T5180302016192', purposeHint: '菓子購入', unreadable: [] } }; });
+    if (action === 'read') return sleep(1500).then(function () { return { ok: true, model: 'gemini-3.5-flash-lite', result: { receiptCount: 1, docType: 'レシート', date: '2026-09-26', vendor: 'ファミリーマート', amount: 1220, paymentMethod: 'QR決済', invoiceNumber: 'T5180302016192', purposeHint: '菓子購入', unreadable: [] } }; });
+    if (action === 'report' || action === 'feedback') return sleep(400).then(function () { return { ok: true }; });
     return Promise.resolve({ ok: false, error: '見本モード' });
   }
   function demoSave(f) {
     var p = parts(f.date), id = p.ymd + '-demo-0' + (S.rows.length + 1), claim = claimText(f);
     S.rows.push({ ssId: 'demo', tab: p.y + '-' + pad(p.m), cells: [id, stamp(), f.date, '', f.project, f.vendor, f.purpose, f.invoice, String(f.amount), f.pay, 'AIのまま', '未申請', '', claim, fileName(f), '', ''] });
-    return { id: id, ssId: 'demo', tab: '', claim: claim, status: '未申請', fileName: fileName(f), fileUrl: '', path: '稼働（見本） › ' + p.y + '年' + p.m + '月稼働 › 経費領収書：' + p.m + '/' + p.d + '_' + f.project, fresh: true };
+    return { id: id, ssId: 'demo', tab: '', claim: claim, status: '未申請', fileName: fileName(f), fileUrl: '', path: '稼働（見本） › ' + p.y + '年' + p.m + '月稼働' + (S.settings.split !== 'month' ? ' › 経費領収書：' + p.m + '/' + p.d + '_' + f.project : ''), fresh: true, readStatus: 'AIのまま' };
   }
   if (DEMO) {
     gfetch = function (url) { return url.indexOf('userinfo') >= 0 ? Promise.resolve({ name: '見本 太郎' }) : Promise.resolve({}); };

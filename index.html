@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.0.0">
+<link rel="stylesheet" href="style.css?v=1.1.0">
 </head>
 <body>
 
@@ -54,8 +54,9 @@
   <div class="menu-panel" id="menuPanel" hidden>
     <div class="menu-user"><span class="avatar" id="menuInitial">?</span><div><b id="menuName"></b><div class="small" id="menuEmail"></div></div></div>
     <button type="button" data-nav="home">ホーム</button>
-    <button type="button" data-nav="folder">保存先フォルダを変える</button>
-    <button type="button" data-nav="ledger">台帳を開く</button>
+    <button type="button" data-nav="batch">まとめて申請</button>
+    <button type="button" data-nav="mypage">マイページ</button>
+    <button type="button" data-nav="help">使い方</button>
     <button type="button" data-nav="logout">ログアウト</button>
     <div class="small menu-ver">版 <span id="verLabel"></span></div>
   </div>
@@ -79,6 +80,7 @@
       <div class="sum-row"><span class="big"><span id="sumCount">-</span><small>件</small></span><span class="sum-total">合計 <b id="sumTotal">-</b> 円</span></div>
       <p class="notice" id="sumOld" hidden></p>
       <p class="note" id="sumEmpty" hidden>未申請の立替はありません。</p>
+      <button type="button" class="btn btn-outline btn-md" id="btnToBatch" data-action="batch" hidden>まとめて申請する</button>
     </section>
 
     <section aria-label="最近の登録" class="recent">
@@ -185,6 +187,22 @@
         <button type="button" class="text-btn" data-action="undo">取り消す</button>
       </div>
     </section>
+
+    <details class="card fb" id="fbCard">
+      <summary>試行の感想を送る（任意・10秒）</summary>
+      <div class="col">
+        <div class="field"><span>使い心地</span>
+          <div class="stars" id="fbStars" role="radiogroup" aria-label="使い心地">
+            <button type="button" role="radio" aria-checked="false" data-v="1">1</button><button type="button" role="radio" aria-checked="false" data-v="2">2</button><button type="button" role="radio" aria-checked="false" data-v="3">3</button><button type="button" role="radio" aria-checked="false" data-v="4">4</button><button type="button" role="radio" aria-checked="false" data-v="5">5</button>
+          </div>
+          <span class="hint">1＝使いにくい ／ 5＝とても使いやすい</span>
+        </div>
+        <label class="field">これまでのやり方と比べて、何分くらい減りましたか<input class="input" type="number" inputmode="numeric" id="fbMin" placeholder="例：3"></label>
+        <label class="field">ひとこと（直してほしいところなど）<textarea class="input" id="fbText" rows="3"></textarea></label>
+        <p class="hint">送られるのは、ここに書いた内容と、読み取りがAIのままだったか等の利用状況だけです。領収書の中身は送りません。</p>
+        <button type="button" class="btn btn-primary btn-md" id="btnFb">感想を送る</button>
+      </div>
+    </details>
   </main>
   <div class="bottom-bar row">
     <button type="button" class="btn btn-md grow" data-action="shoot">続けて撮る</button>
@@ -192,12 +210,114 @@
   </div>
 </section>
 
+<!-- ============================================================ 4 まとめて申請 -->
+<section data-screen="batch" class="screen" hidden>
+  <main class="wrap">
+    <div class="title-row"><span class="mark4"><span></span><span></span><span></span><span></span></span><div><div class="sub">未申請をまとめて1つの申請文にします</div><h1>まとめて申請</h1></div></div>
+    <div class="sum-row"><span class="sub">選んだもの</span><span class="big"><span id="bCount">0</span><small>件</small></span><span class="sum-total" style="margin-left:auto">合計 <b id="bTotal">0</b> 円</span></div>
+    <p class="notice" id="bOld" hidden></p>
+    <section class="card list" id="bList" aria-label="未申請の一覧"></section>
+    <p class="note" id="bEmpty" hidden>未申請の立替はありません。</p>
+    <section class="card claim" id="bPreviewCard" aria-label="まとめた申請文">
+      <h2 class="h2s">まとめた申請文（日付の古い順）</h2>
+      <div class="claim-box" id="bPreview"></div>
+    </section>
+  </main>
+  <div class="bottom-bar">
+    <button type="button" class="btn btn-primary btn-lg" id="btnBatchCopy">コピーしてSlackを開く</button>
+    <button type="button" class="btn btn-primary btn-lg" id="btnBatchMark" hidden>選んだ<span id="bCount2">0</span>件を申請済みにする</button>
+    <button type="button" class="link-btn" id="btnBatchRecopy" hidden>もう一度コピーしてSlackを開く</button>
+  </div>
+</section>
+
+<!-- ============================================================ 5 マイページ -->
+<section data-screen="mypage" class="screen" hidden>
+  <main class="wrap">
+    <div class="me-row"><span class="avatar" id="myInitial">?</span><div><b id="myName"></b><div class="small" id="myEmail"></div></div></div>
+
+    <section class="card pad col" aria-label="保存のしかた">
+      <h2 class="h2s">保存のしかた</h2>
+      <div class="col tight"><span class="small">保存先フォルダ（「○年○月稼働」フォルダが並んでいる場所）</span>
+        <div class="row-line"><b id="myFolder" class="grow break">未設定</b><button type="button" class="btn btn-sm btn-outline" data-action="pick-folder">選び直す</button></div>
+      </div>
+      <fieldset class="radios"><legend class="small">フォルダの分け方</legend>
+        <label><input type="radio" name="split" value="standard"> 月の稼働フォルダ ＋「経費領収書：日付_案件名」フォルダ（標準）</label>
+        <label><input type="radio" name="split" value="month"> 月の稼働フォルダだけ</label>
+      </fieldset>
+      <button type="button" class="row-link" data-action="ledger">台帳（立替金精算台帳）を開く<span aria-hidden="true">›</span></button>
+    </section>
+
+    <section class="card pad col" aria-label="よく使う案件名">
+      <h2 class="h2s">よく使う案件名</h2>
+      <span class="small">確認画面の候補にいつも出ます（最大10件）</span>
+      <div class="chips" id="favList"></div>
+      <div class="row-line"><input class="input grow" type="text" id="favInput" placeholder="例：横須賀市：定例会" autocomplete="off"><button type="button" class="btn btn-sm" id="btnFavAdd">追加</button></div>
+    </section>
+
+    <section class="card pad col" aria-label="困ったとき">
+      <button type="button" class="row-link" data-action="help">使い方<span aria-hidden="true">›</span></button>
+      <button type="button" class="row-link" data-action="report">不具合・要望を送る（管理者に届きます）<span aria-hidden="true">›</span></button>
+      <span class="small">版 <span id="verLabel2"></span></span>
+    </section>
+    <button type="button" class="link-btn" data-action="logout">ログアウト</button>
+  </main>
+</section>
+
+<!-- ============================================================ 6 使い方 -->
+<section data-screen="help" class="screen" hidden>
+  <main class="wrap help">
+    <div class="title-row"><span class="mark4"><span></span><span></span><span></span><span></span></span><div><div class="sub">はじめての方へ</div><h1>使い方</h1></div></div>
+    <section class="card pad col">
+      <h2 class="h2s">基本の流れ（1分）</h2>
+      <ol class="steps3">
+        <li><span>1</span>ホームの「領収書を撮る」で撮影（メールのPDFは「写真・PDFを選ぶ」）</li>
+        <li><span>2</span>読み取った内容を確かめて、黄色の欄を直し、対象案件を選んで「保存する」</li>
+        <li><span>3</span>「コピーしてSlackを開く」→ 立替精算チャンネルの自分のスレッドに貼って送信 →「申請済みにする」</li>
+      </ol>
+    </section>
+    <section class="card pad col">
+      <h2 class="h2s">うまく読み取るコツ</h2>
+      <ul class="tips">
+        <li>明るい場所で、領収書1枚だけを画面いっぱいに撮る</li>
+        <li>2枚以上を一度に撮らない（いちばん大きい1枚しか読みません）</li>
+        <li>長いレシートは、合計金額と日付が入るように撮る</li>
+        <li>読めなかった欄は黄色になります。推測では埋めないので、写真を見て入れてください</li>
+      </ul>
+    </section>
+    <section class="card pad col">
+      <h2 class="h2s">よくある質問</h2>
+      <dl class="faq">
+        <dt>あとでまとめて出したい</dt><dd>保存後の画面で「あとでまとめて申請する」を押します。ホームの「まとめて申請する」から、未申請を選んで1つの申請文にできます。経理のルールは「月末まで溜めず、その都度」なので、溜めすぎに注意してください。</dd>
+        <dt>「申請済み」を間違えて押した</dt><dd>保存後の画面の「取り消す」か、台帳（スプレッドシート）の「申請状態」のプルダウンで「未申請」に戻せます。</dd>
+        <dt>「同じ立替日・金額の申請が既にあります」と出た</dt><dd>同じ領収書を2回送っていないか確かめてください。別の支払いなら、そのまま保存できます。</dd>
+        <dt>「AIが混み合っています」と出た</dt><dd>1分後・2分後に自動でやり直します。待たずに手で入れて保存しても構いません。</dd>
+        <dt>保存先を変えたい</dt><dd>マイページの「保存先フォルダ」の「選び直す」から変えられます。</dd>
+        <dt>おかしな動きをした</dt><dd>マイページの「不具合・要望を送る」から管理者に送ってください。領収書の中身は送られません。</dd>
+      </dl>
+    </section>
+    <p class="safe">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2D53A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      AI（Gemini）に送るのは領収書の画像だけです。氏名やメールアドレスは送りません。保存先はあなたのGoogleドライブです。
+    </p>
+  </main>
+</section>
+
+<!-- ============================================================ 不具合・要望の送信 -->
+<dialog id="reportDlg" class="dlg">
+  <form method="dialog" class="col">
+    <h2 class="h2s">不具合・要望を送る</h2>
+    <p class="note">管理者に届きます。送られるのは、ここに書いた内容と、画面の状態（版・ブラウザ・直前のエラー）だけです。領収書の中身は送りません。</p>
+    <label class="field">内容<textarea class="input" id="repText" rows="5" placeholder="例：保存を押したら「保存できませんでした」と出た"></textarea></label>
+    <div class="row-line"><button type="button" class="btn btn-md grow" id="btnRepCancel">やめる</button><button type="button" class="btn btn-primary btn-md grow" id="btnRepSend">送る</button></div>
+  </form>
+</dialog>
+
 <input type="file" id="fileShoot" accept="image/*" capture="environment" hidden>
 <input type="file" id="filePick" accept="image/*,application/pdf" hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.0.0"></script>
+<script src="config.js?v=1.1.0"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.0.0"></script>
+<script src="app.js?v=1.1.0"></script>
 </body>
 </html>
