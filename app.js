@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.1';
+  var VERSION = '1.2.2';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -354,22 +354,39 @@
     var meta = await gfetch(SHEETS + L.id + '?fields=sheets.properties(sheetId,title)');
     var sheets = (meta.sheets || []).map(function (s) { return s.properties; });
     var mine = sheets.filter(function (s) { return s.title === tab; })[0];
-    if (mine) return mine.sheetId;
+    if (mine) { await formatMonthSheet(L.id, mine.sheetId); return mine.sheetId; }
     var rename = L.created && sheets.length === 1 && !/^\d{4}-\d{2}$/.test(sheets[0].title);
     var req = rename ? { updateSheetProperties: { properties: { sheetId: sheets[0].sheetId, title: tab, gridProperties: { frozenRowCount: 1 } }, fields: 'title,gridProperties.frozenRowCount' } }
       : { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 } } } };
     var res = await jsonPost(SHEETS + L.id + ':batchUpdate', { requests: [req] });
     var sheetId = rename ? sheets[0].sheetId : res.replies[0].addSheet.properties.sheetId;
     await jsonPost(rangeUrl(L.id, "'" + tab + "'!A1") + '?valueInputOption=RAW', { values: [HEADER] }, 'PUT');
-    // 申請状態（L列）はプルダウン、申請文（N列）は折り返して全部見えるように
-    await jsonPost(SHEETS + L.id + ':batchUpdate', { requests: [
-      { setDataValidation: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: C.status, endColumnIndex: C.status + 1 },
-        rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
-      { repeatCell: { range: { sheetId: sheetId, startRowIndex: 1, endRowIndex: 2000, startColumnIndex: C.claim, endColumnIndex: C.claim + 1 }, cell: { userEnteredFormat: { wrapStrategy: 'WRAP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
-      { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: C.claim, endIndex: C.claim + 1 }, properties: { pixelSize: 320 }, fields: 'pixelSize' } },
-      { repeatCell: { range: { sheetId: sheetId, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.933, green: 0.949, blue: 0.98 } } }, fields: 'userEnteredFormat(textFormat,backgroundColor)' } }
-    ] });
+    await formatMonthSheet(L.id, sheetId);
     return sheetId;
+  }
+  // 列の幅（A〜Q、ピクセル）
+  var COL_PX = [170, 130, 90, 70, 220, 200, 120, 130, 110, 110, 100, 90, 90, 260, 260, 160, 160];
+  /**
+   * 月のシートの見た目を整える（このページを開いてから、シートごとに1回だけ）。
+   * 見出し＝太字・薄い青／データ行＝通常の文字・背景なし・1行の高さ固定／申請状態（L列）＝プルダウン／金額＝3桁区切り。
+   * 以前の版で崩れたシート（データ行が太字・青、プルダウンが無い、行が縦に伸びる）も、ここで直る。
+   */
+  async function formatMonthSheet(ssId, sheetId) {
+    S.formatted = S.formatted || {};
+    var key = ssId + ':' + sheetId; if (S.formatted[key]) return;
+    var END = 1000, rng = function (r0, r1, c0, c1) { return { sheetId: sheetId, startRowIndex: r0, endRowIndex: r1, startColumnIndex: c0, endColumnIndex: c1 }; };
+    var reqs = [
+      { updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
+      { repeatCell: { range: rng(0, 1, 0, HEADER.length), cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.933, green: 0.949, blue: 0.98 }, verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat(textFormat.bold,backgroundColor,verticalAlignment,wrapStrategy)' } },
+      { repeatCell: { range: rng(1, END, 0, HEADER.length), cell: { userEnteredFormat: { textFormat: { bold: false }, backgroundColor: { red: 1, green: 1, blue: 1 }, verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat(textFormat.bold,backgroundColor,verticalAlignment,wrapStrategy)' } },
+      { repeatCell: { range: rng(1, END, C.amount, C.amount + 1), cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } }, fields: 'userEnteredFormat.numberFormat' } },
+      { setDataValidation: { range: rng(1, END, C.status, C.status + 1),
+        rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
+      { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'ROWS', startIndex: 0, endIndex: END }, properties: { pixelSize: 24 }, fields: 'pixelSize' } }
+    ];
+    COL_PX.forEach(function (px, i) { reqs.push({ updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: 'pixelSize' } }); });
+    await jsonPost(SHEETS + ssId + ':batchUpdate', { requests: reqs });
+    S.formatted[key] = true;
   }
   /** 申請IDで行を探して、申請状態と申請日を書き換える（並べ替えられていても正しい行に書く） */
   async function setStatus(ssId, tab, id, status) {
@@ -656,7 +673,7 @@
     var ai = S.cur.ai, edited = ai && (ai.date !== f.date || num(ai.amount) !== f.amount || ai.vendor !== f.vendor);
     var claim = claimText(f), id = prefix + pad(seq);
     var row = [id, stamp(), f.date, tab, f.project, f.vendor, f.purpose, f.invoice, f.amount, f.pay, !ai ? '手入力' : edited ? '一部手直し' : 'AIのまま', '未申請', '', claim, up.name, up.webViewLink, ''];
-    await jsonPost(rangeUrl(L.id, "'" + tab + "'!A:Q") + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', { values: [row] });
+    await jsonPost(rangeUrl(L.id, "'" + tab + "'!A:Q") + ':append?valueInputOption=RAW&insertDataOption=OVERWRITE', { values: [row] });
     S.rows.push({ ssId: L.id, tab: tab, cells: row.map(String) }); S.homeMonth = f.date.slice(0, 7);
     return { id: id, ssId: L.id, tab: tab, claim: claim, status: '未申請', fileName: up.name, fileUrl: up.webViewLink, path: S.settings.folder.name + ' › ' + month.name + (S.settings.split !== 'month' ? ' › ' + rName : ''), fresh: true, readStatus: row[10] };
   }
