@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.1.0">
+<link rel="stylesheet" href="style.css?v=1.1.1">
 </head>
 <body>
 
@@ -83,8 +83,14 @@
       <button type="button" class="btn btn-outline btn-md" id="btnToBatch" data-action="batch" hidden>まとめて申請する</button>
     </section>
 
-    <section aria-label="最近の登録" class="recent">
-      <div class="sec-head"><h2>最近の登録</h2><span class="small" id="recentNote"></span></div>
+    <section aria-label="月ごとの登録" class="recent">
+      <div class="sec-head"><h2>月ごとの登録</h2><span class="small" id="recentNote"></span></div>
+      <div class="month-nav">
+        <button type="button" class="month-btn" id="monthPrev" aria-label="前の月">‹</button>
+        <span class="month-label" id="monthLabel" aria-live="polite">-</span>
+        <button type="button" class="month-btn" id="monthNext" aria-label="次の月">›</button>
+        <span class="small month-sum" id="monthSum"></span>
+      </div>
       <div class="card list" id="recentList"></div>
       <p class="note" id="recentEmpty" hidden>まだ登録がありません。下のボタンから領収書を撮ってみましょう。</p>
     </section>
@@ -316,8 +322,8 @@
 <input type="file" id="filePick" accept="image/*,application/pdf" hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.1.0"></script>
+<script src="config.js?v=1.1.1"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.1.0"></script>
+<script src="app.js?v=1.1.1"></script>
 </body>
 </html>

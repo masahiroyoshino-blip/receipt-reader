@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -138,7 +138,7 @@
   function logout() {
     if (!canLeave()) return;
     if (window.google && google.accounts && google.accounts.oauth2 && S.google.token && !DEMO) { try { google.accounts.oauth2.revoke(S.google.token, function () {}); } catch (e) {} }
-    S.google = { token: '', exp: 0 }; S.session = ''; S.user = null; S.settings = Object.assign({}, DEFAULT_SETTINGS); S.settingsFileId = null; S.rows = []; S.ledgers = {}; S.cur = null; S.saved = null;
+    S.google = { token: '', exp: 0 }; S.session = ''; S.user = null; S.settings = Object.assign({}, DEFAULT_SETTINGS); S.settingsFileId = null; S.rows = []; S.ledgers = {}; S.cur = null; S.saved = null; S.homeMonth = null; S.pastRows = {};
     show('login');
   }
 
@@ -266,20 +266,23 @@
     if (DEMO) { S.rows = S.demoRows || (S.demoRows = demoRows()); return Promise.resolve(); }
     if (!S.settings.folder) { S.rows = []; return Promise.resolve(); }
     var now = new Date(), years = [now.getFullYear()]; if (now.getMonth() === 0) years.push(now.getFullYear() - 1);
+    S.pastRows = {};
+    return Promise.all(years.map(loadYearRows)).then(function (lists) { S.rows = [].concat.apply([], lists); });
+  }
+  /** 1年分の台帳を読む（台帳が無ければ空） */
+  function loadYearRows(y) {
     var rows = [];
-    return Promise.all(years.map(function (y) {
-      return findLedger(y, false).then(function (L) {
-        if (!L) return;
-        return gfetch(SHEETS + L.id + '?fields=sheets.properties(title)').then(function (meta) {
-          var tabs = (meta.sheets || []).map(function (s) { return s.properties.title; }).filter(function (t) { return /^\d{4}-\d{2}$/.test(t); });
-          if (!tabs.length) return;
-          var q = tabs.map(function (t) { return 'ranges=' + encodeURIComponent("'" + t + "'!A2:Q"); }).join('&');
-          return gfetch(SHEETS + L.id + '/values:batchGet?' + q).then(function (j) {
-            (j.valueRanges || []).forEach(function (vr, i) { (vr.values || []).forEach(function (r) { if (r[C.id]) rows.push({ ssId: L.id, tab: tabs[i], cells: r }); }); });
-          });
+    return findLedger(y, false).then(function (L) {
+      if (!L) return;
+      return gfetch(SHEETS + L.id + '?fields=sheets.properties(title)').then(function (meta) {
+        var tabs = (meta.sheets || []).map(function (s) { return s.properties.title; }).filter(function (t) { return /^\d{4}-\d{2}$/.test(t); });
+        if (!tabs.length) return;
+        var q = tabs.map(function (t) { return 'ranges=' + encodeURIComponent("'" + t + "'!A2:Q"); }).join('&');
+        return gfetch(SHEETS + L.id + '/values:batchGet?' + q).then(function (j) {
+          (j.valueRanges || []).forEach(function (vr, i) { (vr.values || []).forEach(function (r) { if (r[C.id]) rows.push({ ssId: L.id, tab: tabs[i], cells: r }); }); });
         });
       });
-    })).then(function () { S.rows = rows; });
+    }).then(function () { return rows; });
   }
   async function ensureMonthSheet(L, tab) {
     var meta = await gfetch(SHEETS + L.id + '?fields=sheets.properties(sheetId,title)');
@@ -339,10 +342,54 @@
       $('#sumOld').textContent = 'いちばん古いものは' + p.m + '月' + p.d + '日（' + days + '日前）です。' + (days >= 7 ? '月末まで溜めずに出しましょう。' : '');
       $('#sumOld').hidden = false;
     } else $('#sumOld').hidden = true;
-    var recent = S.rows.slice().sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).slice(0, 8);
+    renderMonth();
+  }
+
+  // ---- 月ごとの登録（「＜ ＞」で表示する月を切り替える。月は立替日で決める）
+  function ymOf(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1); }
+  function shiftYm(m, k) { return ymOf(new Date(+m.slice(0, 4), +m.slice(5, 7) - 1 + k, 1)); }
+  function rowYm(r) { var d = String(r.cells[C.date] || ''); return /^\d{4}-\d{2}/.test(d) ? d.slice(0, 7) : r.tab; }
+  function monthBounds() {
+    var now = ymOf(new Date()), latest = now;
+    S.rows.forEach(function (r) { var m = rowYm(r); if (m > latest) latest = m; });
+    // 戻れるのは去年の1月まで（それより前は台帳を開いて見る）
+    return { min: (new Date().getFullYear() - 1) + '-01', max: latest };
+  }
+  function rowsOfMonth(m) {
+    var y = +m.slice(0, 4), pool = S.rows.concat(S.pastRows && S.pastRows[y] || []), seen = {};
+    return pool.filter(function (r) {
+      if (rowYm(r) !== m || seen[r.cells[C.id]]) return false;
+      return (seen[r.cells[C.id]] = true);
+    }).sort(function (a, b) {
+      return String(b.cells[C.date]).localeCompare(String(a.cells[C.date])) || String(b.cells[C.at]).localeCompare(String(a.cells[C.at]));
+    });
+  }
+  function moveMonth(k) {
+    var b = monthBounds(), m = shiftYm(S.homeMonth || ymOf(new Date()), k);
+    if (m < b.min || m > b.max) return;
+    S.homeMonth = m;
+    var y = +m.slice(0, 4), loaded = S.rows.some(function (r) { return r.ssId !== 'demo' && +rowYm(r).slice(0, 4) === y; }) || y >= new Date().getFullYear();
+    S.pastRows = S.pastRows || {};
+    if (DEMO || loaded || S.pastRows[y] || !S.settings.folder) { renderMonth(); return; }
+    // 去年の月に戻ったときだけ、去年の台帳をあとから読む
+    $('#monthLabel').textContent = '読み込み中…';
+    loadYearRows(y).then(function (rows) { S.pastRows[y] = rows; renderMonth(); })
+      .catch(function (e) { S.pastRows[y] = []; toast(y + '年の台帳を読み込めませんでした：' + errText(e), true); renderMonth(); });
+  }
+  function renderMonth() {
+    var b = monthBounds();
+    if (!S.homeMonth || S.homeMonth > b.max || S.homeMonth < b.min) S.homeMonth = ymOf(new Date());
+    var m = S.homeMonth, list = rowsOfMonth(m);
+    $('#monthLabel').textContent = +m.slice(0, 4) + '年' + +m.slice(5, 7) + '月';
+    $('#monthPrev').disabled = shiftYm(m, -1) < b.min;
+    $('#monthNext').disabled = shiftYm(m, 1) > b.max;
+    var sum = list.reduce(function (s, r) { return s + num(r.cells[C.amount]); }, 0);
+    $('#monthSum').textContent = list.length ? list.length + '件・' + yen(sum) + '円' : '';
     var box = $('#recentList'); box.innerHTML = '';
-    box.hidden = !recent.length; $('#recentEmpty').hidden = !!recent.length || !S.settings.folder;
-    recent.forEach(function (r) {
+    box.hidden = !list.length;
+    $('#recentEmpty').hidden = !!list.length || !S.settings.folder;
+    $('#recentEmpty').textContent = S.rows.length ? 'この月の登録はありません。' : 'まだ登録がありません。下のボタンから領収書を撮ってみましょう。';
+    list.forEach(function (r) {
       var c = r.cells, p = parts(c[C.date] || ''), done = c[C.status] === '申請済み';
       var b = document.createElement('button'); b.type = 'button'; b.className = 'row-item';
       b.innerHTML = '<span class="row-date"><span class="m">' + (p.m || '-') + '月</span><span class="d">' + (p.d || '-') + '</span></span>' +
@@ -358,6 +405,8 @@
   $$('[data-action="pick-file"]').forEach(function (b) { b.addEventListener('click', function () { $('#filePick').value = ''; $('#filePick').click(); }); });
   $$('[data-action="pick-folder"]').forEach(function (b) { b.addEventListener('click', pickFolder); });
   $$('[data-action="home"]').forEach(function (b) { b.addEventListener('click', function () { goHome(); }); });
+  $('#monthPrev').addEventListener('click', function () { moveMonth(-1); });
+  $('#monthNext').addEventListener('click', function () { moveMonth(1); });
   ['#fileShoot', '#filePick'].forEach(function (sel) { $(sel).addEventListener('change', function () { var f = this.files && this.files[0]; if (f) startConfirm(f, sel === '#fileShoot' ? '撮影' : '選択'); }); });
 
   /** 画像は長辺1600pxのJPEGに縮める（文字が読める大きさ）。PDFはそのまま */
@@ -540,7 +589,7 @@
     var claim = claimText(f), id = prefix + pad(seq);
     var row = [id, stamp(), f.date, tab, f.project, f.vendor, f.purpose, f.invoice, f.amount, f.pay, !ai ? '手入力' : edited ? '一部手直し' : 'AIのまま', '未申請', '', claim, up.name, up.webViewLink, ''];
     await jsonPost(rangeUrl(L.id, "'" + tab + "'!A:Q") + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', { values: [row] });
-    S.rows.push({ ssId: L.id, tab: tab, cells: row.map(String) });
+    S.rows.push({ ssId: L.id, tab: tab, cells: row.map(String) }); S.homeMonth = f.date.slice(0, 7);
     return { id: id, ssId: L.id, tab: tab, claim: claim, status: '未申請', fileName: up.name, fileUrl: up.webViewLink, path: S.settings.folder.name + ' › ' + month.name + (S.settings.split !== 'month' ? ' › ' + rName : ''), fresh: true, readStatus: row[10] };
   }
 
@@ -765,7 +814,7 @@
     return Promise.resolve({ ok: false, error: '見本モード' });
   }
   function demoSave(f) {
-    var p = parts(f.date), id = p.ymd + '-demo-0' + (S.rows.length + 1), claim = claimText(f);
+    var p = parts(f.date), id = p.ymd + '-demo-0' + (S.rows.length + 1), claim = claimText(f); S.homeMonth = f.date.slice(0, 7);
     S.rows.push({ ssId: 'demo', tab: p.y + '-' + pad(p.m), cells: [id, stamp(), f.date, '', f.project, f.vendor, f.purpose, f.invoice, String(f.amount), f.pay, 'AIのまま', '未申請', '', claim, fileName(f), '', ''] });
     return { id: id, ssId: 'demo', tab: '', claim: claim, status: '未申請', fileName: fileName(f), fileUrl: '', path: '稼働（見本） › ' + p.y + '年' + p.m + '月稼働' + (S.settings.split !== 'month' ? ' › 経費領収書：' + p.m + '/' + p.d + '_' + f.project : ''), fresh: true, readStatus: 'AIのまま' };
   }

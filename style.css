@@ -104,6 +104,12 @@ h1, h2, h3, p { margin: 0; }
 .sum-total b { font-size: 20px; color: var(--ink); font-variant-numeric: tabular-nums; }
 .recent { display: flex; flex-direction: column; gap: 10px; }
 .list { overflow: hidden; }
+.month-nav { display: flex; align-items: center; gap: 6px; }
+.month-btn { width: 44px; height: 40px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--white); color: var(--blue); font-size: 22px; line-height: 1; cursor: pointer; }
+.month-btn:hover:not(:disabled) { background: var(--blue-tint); border-color: var(--blue-line); }
+.month-btn:disabled { color: var(--line-2); cursor: default; }
+.month-label { min-width: 104px; text-align: center; font-size: 15px; font-weight: 700; }
+.month-sum { margin-left: auto; }
 .row-item { display: flex; gap: 12px; align-items: center; padding: 14px 16px; border: none; border-bottom: 1px solid #EFEDEE; background: none; width: 100%; text-align: left; cursor: pointer; }
 .row-item:last-child { border-bottom: none; }
 .row-item:hover { background: #FAFAFB; }
