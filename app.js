@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.1.1';
+  var VERSION = '1.1.2';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -133,6 +133,10 @@
     }).then(loadSettings).then(function () {
       $('#menuName').textContent = S.user.name; $('#menuEmail').textContent = S.user.email; $('#menuInitial').textContent = S.user.name.slice(0, 1);
       goHome();
+      if (PICK_MODE) {   // ホーム画面アプリから「Safariで開く」で来たとき：そのままフォルダ選択を開く
+        try { history.replaceState(null, '', location.pathname + (DEMO ? '?demo=1' : '')); } catch (e) {}
+        toast('保存先のフォルダを選んでください'); pickFolder(true);
+      }
     }).catch(function (e) { box.textContent = errText(e); box.hidden = false; }).then(function () { btn.disabled = false; });
   });
   function logout() {
@@ -201,7 +205,52 @@
     });
     return pickerReady;
   }
-  function pickFolder() {
+  // iPhoneのホーム画面アプリでは、はめ込みのGoogle画面がログイン情報（クッキー）を使えず、フォルダ選択が開けない。
+  // そこでフォルダ選択だけSafariで行い、選んだ結果（ドライブの設定ファイル）をアプリに読み直す。
+  var IOS_APP = (/iPhone|iPad|iPod/.test(navigator.userAgent) && navigator.standalone === true) || /[?&]iosapp=1\b/.test(location.search);
+  var PICK_MODE = /[?&]pick=1\b/.test(location.search);
+  function pickUrl() { return location.origin + location.pathname + '?pick=1'; }
+  function openPickDlg() {
+    closeMenu(); var d = $('#pickDlg');
+    $('#pickStep1').hidden = false; $('#pickStep2').hidden = true; $('#pickStep3').hidden = true;
+    $('#pickSafari').href = 'x-safari-' + pickUrl();
+    if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function showPickDone(name) {
+    var d = $('#pickDlg');
+    $('#pickStep1').hidden = true; $('#pickStep2').hidden = true; $('#pickStep3').hidden = false;
+    $('#pickDoneName').textContent = name;
+    if (d.showModal) { if (!d.open) d.showModal(); } else d.setAttribute('open', '');
+    if (S.screen === 'home') goHome(); else if (S.screen === 'mypage') openMy();
+  }
+  function closePickDlg() { var d = $('#pickDlg'); if (d.close) d.close(); else d.removeAttribute('open'); }
+  /** Safariで選んだ保存先を読み直して画面に反映する */
+  function reloadFolder(fromButton) {
+    var before = S.settings.folder && S.settings.folder.id;
+    var go = fromButton ? ensureToken() : (tokenValid() ? Promise.resolve() : Promise.reject(new Error('skip')));
+    return go.then(loadSettings).then(function () {
+      var f = S.settings.folder;
+      if (f && f.id !== before) {
+        S.ledgers = {}; closePickDlg(); toast('保存先を「' + f.name + '」にしました');
+        if (S.screen === 'mypage') openMy(); else if (S.screen === 'home') goHome(); else updatePreview();
+      } else if (fromButton) toast('まだ変わっていません。Safariでフォルダを選び終えてから押してください', true);
+    }).catch(function (e) { if (fromButton) toast(errText(e), true); });
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && IOS_APP && S.user && !$('#pickStep2').hidden) reloadFolder(false);
+  });
+  $('#pickSafari').addEventListener('click', function () { $('#pickStep1').hidden = true; $('#pickStep2').hidden = false; });
+  $('#pickCopy').addEventListener('click', function () {
+    var u = pickUrl();
+    (navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(u) : Promise.reject()).catch(function () { fallbackCopy(u); })
+      .then(function () { toast('住所をコピーしました。Safariに貼り付けて開いてください'); $('#pickStep1').hidden = true; $('#pickStep2').hidden = false; });
+  });
+  $('#pickReload').addEventListener('click', function () { reloadFolder(true); });
+  $('#pickTryHere').addEventListener('click', function () { closePickDlg(); pickFolder(true); });
+  $$('[data-action="pick-close"]').forEach(function (b) { b.addEventListener('click', closePickDlg); });
+
+  function pickFolder(here) {
+    if (IOS_APP && here !== true) { openPickDlg(); return Promise.resolve(); }
     if (DEMO) { S.settings.folder = { id: 'demo', name: '稼働（見本）' }; toast('保存先を「稼働（見本）」にしました'); if (S.screen === 'mypage') openMy(); else goHome(); return Promise.resolve(); }
     if (!CFG.pickerApiKey || /ここに/.test(CFG.pickerApiKey)) { toast('フォルダ選択の設定（config.js の pickerApiKey）が未記入です。管理者に連絡してください', true); return Promise.resolve(); }
     return ensureToken().then(loadPicker).then(function () {
@@ -219,7 +268,9 @@
             gfetch(DRIVE + '/files/' + id + '?supportsAllDrives=true&fields=id,name,driveId,capabilities(canAddChildren)').then(function (f) {
               if (f.capabilities && f.capabilities.canAddChildren === false) { toast('このフォルダには保存する権限がありません。別のフォルダを選んでください', true); return; }
               S.settings.folder = { id: f.id, name: f.name, driveId: f.driveId || '' }; S.ledgers = {};
-              return saveSettings().then(function () { toast('保存先を「' + f.name + '」にしました'); if (S.screen === 'home') goHome(); else if (S.screen === 'mypage') openMy(); else updatePreview(); });
+              return saveSettings().then(function () {
+                if (PICK_MODE) { showPickDone(f.name); return; }
+                toast('保存先を「' + f.name + '」にしました'); if (S.screen === 'home') goHome(); else if (S.screen === 'mypage') openMy(); else updatePreview(); });
             }).catch(function (e) { toast('フォルダを確認できませんでした：' + errText(e), true); }).then(resolve);
           });
         if (P.Feature && P.Feature.SUPPORT_DRIVES) b.enableFeature(P.Feature.SUPPORT_DRIVES);
