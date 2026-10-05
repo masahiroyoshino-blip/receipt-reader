@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.1.2';
+  var VERSION = '1.1.3';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -113,9 +113,9 @@
     return tokenClient;
   }
   /** ボタン操作の中でだけ呼ぶ（Googleのログイン画面はユーザー操作がないと開けない） */
-  function requestToken() {
+  function requestToken(prompt) {
     if (DEMO) { S.google.token = 'demo'; S.google.exp = Date.now() + 3600e3; return Promise.resolve('demo'); }
-    return new Promise(function (resolve, reject) { pendingToken = { resolve: resolve, reject: reject }; getTokenClient().requestAccessToken({ prompt: '' }); });
+    return new Promise(function (resolve, reject) { pendingToken = { resolve: resolve, reject: reject }; getTokenClient().requestAccessToken({ prompt: prompt || '' }); });
   }
   function tokenValid() { return S.google.token && Date.now() < S.google.exp - 60000; }
   function ensureToken() { return tokenValid() ? Promise.resolve() : requestToken(); }
@@ -133,9 +133,9 @@
     }).then(loadSettings).then(function () {
       $('#menuName').textContent = S.user.name; $('#menuEmail').textContent = S.user.email; $('#menuInitial').textContent = S.user.name.slice(0, 1);
       goHome();
-      if (PICK_MODE) {   // ホーム画面アプリから「Safariで開く」で来たとき：そのままフォルダ選択を開く
+      if (PICK_MODE) {   // ホーム画面アプリから「Safariで開く」で来たとき：マイページの「選び直す」へ案内する
         try { history.replaceState(null, '', location.pathname + (DEMO ? '?demo=1' : '')); } catch (e) {}
-        toast('保存先のフォルダを選んでください'); pickFolder(true);
+        openMy(); toast('「選び直す」を押して、保存先のフォルダを選んでください');
       }
     }).catch(function (e) { box.textContent = errText(e); box.hidden = false; }).then(function () { btn.disabled = false; });
   });
@@ -208,12 +208,16 @@
   // iPhoneのホーム画面アプリでは、はめ込みのGoogle画面がログイン情報（クッキー）を使えず、フォルダ選択が開けない。
   // そこでフォルダ選択だけSafariで行い、選んだ結果（ドライブの設定ファイル）をアプリに読み直す。
   var IOS_APP = (/iPhone|iPad|iPod/.test(navigator.userAgent) && navigator.standalone === true) || /[?&]iosapp=1\b/.test(location.search);
+  // Safari（iPhone・Mac）は、ポップアップのGoogle画面を本人が操作した直後だけ、はめ込みのGoogle画面にもログイン情報を渡す。
+  // そこでフォルダ選択の直前に、アカウント選択画面を出して1回タップしてもらう。
+  var UA = navigator.userAgent;
+  var NEEDS_TAP = /iPhone|iPad|iPod/.test(UA) || (/Safari\//.test(UA) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/.test(UA)) || IOS_APP;
   var PICK_MODE = /[?&]pick=1\b/.test(location.search);
   function pickUrl() { return location.origin + location.pathname + '?pick=1'; }
   function openPickDlg() {
     closeMenu(); var d = $('#pickDlg');
     $('#pickStep1').hidden = false; $('#pickStep2').hidden = true; $('#pickStep3').hidden = true;
-    $('#pickSafari').href = 'x-safari-' + pickUrl();
+    $('#pickSafari').href = 'x-safari-' + pickUrl(); $('#pickSafari').hidden = !IOS_APP; $('#pickCopy').hidden = !IOS_APP; $('#pickAppNote').hidden = !IOS_APP;
     if (d.showModal) d.showModal(); else d.setAttribute('open', '');
   }
   function showPickDone(name) {
@@ -246,14 +250,16 @@
       .then(function () { toast('住所をコピーしました。Safariに貼り付けて開いてください'); $('#pickStep1').hidden = true; $('#pickStep2').hidden = false; });
   });
   $('#pickReload').addEventListener('click', function () { reloadFolder(true); });
-  $('#pickTryHere').addEventListener('click', function () { closePickDlg(); pickFolder(true); });
+  $('#pickTryHere').addEventListener('click', function () { closePickDlg(); pickFolder(); });
   $$('[data-action="pick-close"]').forEach(function (b) { b.addEventListener('click', closePickDlg); });
 
-  function pickFolder(here) {
-    if (IOS_APP && here !== true) { openPickDlg(); return Promise.resolve(); }
+  function pickFolder() {
     if (DEMO) { S.settings.folder = { id: 'demo', name: '稼働（見本）' }; toast('保存先を「稼働（見本）」にしました'); if (S.screen === 'mypage') openMy(); else goHome(); return Promise.resolve(); }
     if (!CFG.pickerApiKey || /ここに/.test(CFG.pickerApiKey)) { toast('フォルダ選択の設定（config.js の pickerApiKey）が未記入です。管理者に連絡してください', true); return Promise.resolve(); }
-    return ensureToken().then(loadPicker).then(function () {
+    // ボタンを押した流れの中で、すぐにアカウント選択画面を開く（後回しにするとポップアップが止められる）
+    var ready = NEEDS_TAP ? requestToken('select_account') : ensureToken();
+    if (NEEDS_TAP) toast('準備のため、Googleのアカウントを1回タップしてください');
+    return ready.then(loadPicker).then(function () {
       return new Promise(function (resolve) {
         var P = google.picker;
         var mine = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder');
@@ -262,7 +268,8 @@
           .setOAuthToken(S.google.token).setDeveloperKey(CFG.pickerApiKey).setAppId(String(CFG.clientId).split('-')[0]).setLocale('ja')
           .setCallback(function (data) {
             var act = data[P.Response.ACTION];
-            if (act === P.Action.CANCEL) { resolve(); return; }
+            // エラー画面（「キーが無効」など）を閉じたときも CANCEL になるので、選べなかったときの案内を出す
+            if (act === P.Action.CANCEL) { if (NEEDS_TAP) openPickDlg(); resolve(); return; }
             if (act !== P.Action.PICKED) return;
             var id = data[P.Response.DOCUMENTS][0][P.Document.ID];
             gfetch(DRIVE + '/files/' + id + '?supportsAllDrives=true&fields=id,name,driveId,capabilities(canAddChildren)').then(function (f) {
