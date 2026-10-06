@@ -16,13 +16,14 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.4';
+  var VERSION = '1.2.5';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
   var ALL = 'supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives';
   var BUSY_RE = /high demand|overloaded|UNAVAILABLE|RESOURCE_EXHAUSTED|quota|→429|→503|HTTP 429|HTTP 503/i;
-  var AUTO_RETRY_SEC = [15];   // 混雑時の自動やり直しは1回だけ（裏側が30秒で打ち切るので、長くても1分ほどで結果が出る）
+  var AUTO_RETRY_SEC = [];     // 混雑時の自動やり直しはしない（待つかどうかは本人が「もう一度読み取る」で選ぶ）
+  var READ_TIMEOUT_SEC = 40;   // 読み取りは画面側で必ず40秒で打ち切る（裏側でAIの返事が止まっても待ち続けない）
   var PREFIX = CFG.ledgerPrefix || '立替金精算台帳_';
   var SLACK_URL = CFG.slackChannelUrl || 'https://replayce.slack.com/archives/C08J736MX5H';
   var HEADER = ['申請ID', '登録日時', '立替日', '対象月', '対象案件', '利用会社', '用途', 'インボイス登録番号', '金額（税込・円）', '支払方法', '読取ステータス', '申請状態', '申請日', '申請文', '領収書ファイル名', '領収書のリンク', '備考'];
@@ -205,11 +206,16 @@
   /** 通信そのものの失敗（Failed to fetch／返事が読めない）は、3秒あけて1回だけやり直す */
   function api(action, payload, retried) {
     if (DEMO) return demoApi(action, payload);
-    var t0 = Date.now();
+    var t0 = Date.now(), ctl = null, timer = null, timedOut = false;
+    if (action === 'read' && window.AbortController) {
+      ctl = new AbortController();
+      timer = setTimeout(function () { timedOut = true; ctl.abort(); }, READ_TIMEOUT_SEC * 1000);
+    }
     return fetch(CFG.apiUrl, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow',
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow', signal: ctl ? ctl.signal : undefined,
       body: JSON.stringify(Object.assign({ action: action, session: S.session }, payload || {}))
     }).then(function (res) { return res.text(); }).then(function (t) {
+      clearTimeout(timer);
       var j; try { j = JSON.parse(t); } catch (e) {
         // 何が返ってきたかを添える（例：Googleのエラーページの題名）。次に起きたときの手がかりにする
         var m = String(t).match(/<title>([^<]{1,60})<\/title>/i), what = m ? m[1] : String(t).replace(/\s+/g, ' ').slice(0, 40);
@@ -219,6 +225,8 @@
       if (j.code === 401 && action !== 'login') throw new Error('ログインの期限が切れました。メニューからログアウトして、もう一度ログインしてください');
       return j;
     }).catch(function (e) {
+      clearTimeout(timer);
+      if (timedOut) throw new Error(READ_TIMEOUT_SEC + '秒たってもAIから返事がないので止めました。「もう一度読み取る」で再挑戦できます');
       if (retried || /ログインの期限/.test(errText(e))) throw e;   // ログインの確認も含めて、1回だけやり直す
       return sleep(3000).then(function () { return api(action, payload, true); });
     });
@@ -590,7 +598,7 @@
   async function read() {
     var seq = S.readSeq, b64 = await toBase64(S.cur.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
-      var tStart = Date.now(), msg = function () { setStatus2('busy', '読み取り中… ' + Math.round((Date.now() - tStart) / 1000) + '秒', 'ふつう5〜10秒で終わります。待たずに手で入れても構いません。'); };
+      var tStart = Date.now(), msg = function () { setStatus2('busy', '読み取り中… ' + Math.round((Date.now() - tStart) / 1000) + '秒', 'ふつう5〜10秒で終わります（' + READ_TIMEOUT_SEC + '秒で打ち切ります）。待たずに手で入れても構いません。'); };
       msg(); var timer = setInterval(function () { if (seq === S.readSeq) msg(); }, 1000);
       var r;
       try { r = await api('read', { file: b64, mimeType: S.cur.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
