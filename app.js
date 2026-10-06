@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.5';
+  var VERSION = '1.2.6';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -413,14 +413,14 @@
     var meta = await gfetch(SHEETS + L.id + '?fields=sheets.properties(sheetId,title)');
     var sheets = (meta.sheets || []).map(function (s) { return s.properties; });
     var mine = sheets.filter(function (s) { return s.title === tab; })[0];
-    if (mine) { await formatMonthSheet(L.id, mine.sheetId); return mine.sheetId; }
+    if (mine) { await formatMonthSheet(L.id, mine.sheetId, tab); return mine.sheetId; }
     var rename = L.created && sheets.length === 1 && !/^\d{4}-\d{2}$/.test(sheets[0].title);
     var req = rename ? { updateSheetProperties: { properties: { sheetId: sheets[0].sheetId, title: tab, gridProperties: { frozenRowCount: 1 } }, fields: 'title,gridProperties.frozenRowCount' } }
       : { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 } } } };
     var res = await jsonPost(SHEETS + L.id + ':batchUpdate', { requests: [req] });
     var sheetId = rename ? sheets[0].sheetId : res.replies[0].addSheet.properties.sheetId;
     await jsonPost(rangeUrl(L.id, "'" + tab + "'!A1") + '?valueInputOption=RAW', { values: [HEADER] }, 'PUT');
-    await formatMonthSheet(L.id, sheetId);
+    await formatMonthSheet(L.id, sheetId, tab);
     return sheetId;
   }
   // 列の幅（A〜Q、ピクセル）
@@ -430,19 +430,38 @@
    * 見出し＝太字・薄い青／データ行＝通常の文字・背景なし・1行の高さ固定／申請状態（L列）＝プルダウン／金額＝3桁区切り。
    * 以前の版で崩れたシート（データ行が太字・青、プルダウンが無い、行が縦に伸びる）も、ここで直る。
    */
-  async function formatMonthSheet(ssId, sheetId) {
+  async function formatMonthSheet(ssId, sheetId, tab) {
     S.formatted = S.formatted || {};
     var key = ssId + ':' + sheetId; if (S.formatted[key]) return;
+    // 今の状態を見る：L2にプルダウンがあるか／申請状態の色分けが既にあるか（あれば足さない・上書きしない。手で変えた見た目を消さないため）
+    var cur = await gfetch(SHEETS + ssId + '?ranges=' + encodeURIComponent("'" + tab + "'!L2") + '&fields=sheets(properties.sheetId,conditionalFormats,data.rowData.values.dataValidation)');
+    var sh = (cur.sheets || []).filter(function (x) { return x.properties && x.properties.sheetId === sheetId; })[0] || {};
+    var cell0 = ((((((sh.data || [])[0] || {}).rowData || [])[0] || {}).values) || [])[0] || {};
+    var hasValidation = !!cell0.dataValidation;
+    var hasColors = (sh.conditionalFormats || []).some(function (cf) {
+      var c = cf.booleanRule && cf.booleanRule.condition;
+      return c && c.type === 'TEXT_EQ' && (c.values || []).some(function (v) { return v.userEnteredValue === '未申請' || v.userEnteredValue === '申請済み'; });
+    });
     var END = 1000, rng = function (r0, r1, c0, c1) { return { sheetId: sheetId, startRowIndex: r0, endRowIndex: r1, startColumnIndex: c0, endColumnIndex: c1 }; };
     var reqs = [
       { updateSheetProperties: { properties: { sheetId: sheetId, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
       { repeatCell: { range: rng(0, 1, 0, HEADER.length), cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.933, green: 0.949, blue: 0.98 }, verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat(textFormat.bold,backgroundColor,verticalAlignment,wrapStrategy)' } },
       { repeatCell: { range: rng(1, END, 0, HEADER.length), cell: { userEnteredFormat: { textFormat: { bold: false }, backgroundColor: { red: 1, green: 1, blue: 1 }, verticalAlignment: 'MIDDLE', wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat(textFormat.bold,backgroundColor,verticalAlignment,wrapStrategy)' } },
       { repeatCell: { range: rng(1, END, C.amount, C.amount + 1), cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } }, fields: 'userEnteredFormat.numberFormat' } },
-      { setDataValidation: { range: rng(1, END, C.status, C.status + 1),
-        rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } },
       { updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'ROWS', startIndex: 0, endIndex: END }, properties: { pixelSize: 24 }, fields: 'pixelSize' } }
     ];
+    if (!hasValidation) reqs.push({ setDataValidation: { range: rng(1, END, C.status, C.status + 1),
+      rule: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: '未申請' }, { userEnteredValue: '申請済み' }] }, strict: true, showCustomUi: true } } });
+    // 申請状態の色分け（未申請＝薄い黄色、申請済み＝薄い緑）。チップ型の色はAPIで付けられないため、条件付き書式で色を付ける
+    var color = function (text, bg, fg, i) {
+      return { addConditionalFormatRule: { index: i, rule: { ranges: [rng(1, END, C.status, C.status + 1)],
+        booleanRule: { condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: text }] },
+          format: { backgroundColor: bg, textFormat: { foregroundColor: fg, bold: true } } } } } };
+    };
+    if (!hasColors) {
+      reqs.push(color('未申請', { red: 1, green: 0.953, blue: 0.839 }, { red: 0.478, green: 0.294, blue: 0 }, 0));
+      reqs.push(color('申請済み', { red: 0.902, green: 0.957, blue: 0.918 }, { red: 0.075, green: 0.451, blue: 0.2 }, 1));
+    }
     COL_PX.forEach(function (px, i) { reqs.push({ updateDimensionProperties: { range: { sheetId: sheetId, dimension: 'COLUMNS', startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: 'pixelSize' } }); });
     await jsonPost(SHEETS + ssId + ':batchUpdate', { requests: reqs });
     S.formatted[key] = true;
