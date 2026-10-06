@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.2';
+  var VERSION = '1.2.4';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -120,9 +120,27 @@
     });
     return tokenClient;
   }
+  // Android は、Googleのログインを別の窓（ポップアップ）で開くと真っ黒のまま止まることがある（2026-10-06 実機）。
+  // そこで Android（と、ログイン画面の予備リンクを押した人）は、画面ごとGoogleに移って戻ってくる方式にする。
+  // 戻り先は Google Cloud のログイン用クライアントの「承認済みのリダイレクトURI」に登録した住所と完全に一致させる。
+  var ANDROID = /Android/i.test(navigator.userAgent);
+  var REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, '');
+  function useRedirect() { if (ANDROID) return true; try { return localStorage.getItem('receipt_login_redirect') === '1'; } catch (e) { return false; } }
+  function redirectLogin(prompt) {
+    var st = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    try { sessionStorage.setItem('receipt_oauth_state', st); } catch (e) {}
+    var q = { client_id: CFG.clientId, redirect_uri: REDIRECT_URI, response_type: 'token', scope: SCOPES, include_granted_scopes: 'true', hd: CFG.allowedDomain, state: st };
+    if (prompt) q.prompt = prompt;
+    location.assign('https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams(q).toString());
+    return new Promise(function () {});   // 画面ごと移るので、ここには戻らない
+  }
   /** ボタン操作の中でだけ呼ぶ（Googleのログイン画面はユーザー操作がないと開けない） */
   function requestToken(prompt) {
     if (DEMO) { S.google.token = 'demo'; S.google.exp = Date.now() + 3600e3; return Promise.resolve('demo'); }
+    if (useRedirect()) {
+      if (S.user && !confirm('Googleのログインの期限が切れました。Googleの画面に移ってログインし直します（入力中の内容は消えます）。よろしいですか？')) return Promise.reject(new Error('ログインし直しを取りやめました'));
+      return redirectLogin(prompt);
+    }
     return new Promise(function (resolve, reject) { pendingToken = { resolve: resolve, reject: reject }; getTokenClient().requestAccessToken({ prompt: prompt || '' }); });
   }
   function tokenValid() { return S.google.token && Date.now() < S.google.exp - 60000; }
@@ -134,7 +152,19 @@
       box.textContent = '設定（config.js）が未記入です。管理者に連絡してください。'; box.hidden = false; return;
     }
     var btn = this; btn.disabled = true;
-    requestToken().then(function (tok) { return api('login', { accessToken: tok }); }).then(function (r) {
+    requestToken().then(finishLogin).catch(function (e) { box.textContent = errText(e); box.hidden = false; }).then(function () { btn.disabled = false; });
+  });
+  // 予備：ログイン画面が真っ黒・開かないときは、画面ごと移る方式に切り替える（この端末で覚えておく）
+  $('#btnLoginRedirect').addEventListener('click', function (e) {
+    e.preventDefault();
+    if (!DEMO && (!CFG.clientId || /ここに/.test(CFG.clientId))) return;
+    try { localStorage.setItem('receipt_login_redirect', '1'); } catch (err) {}
+    if (DEMO) { $('#btnLogin').click(); return; }
+    redirectLogin();
+  });
+  /** Googleのアクセストークンを受け取ったあとの共通の流れ（裏側で社内アカウントか確かめ → 設定を読む → ホームへ） */
+  function finishLogin(tok) {
+    return api('login', { accessToken: tok }).then(function (r) {
       if (!r.ok) throw new Error(r.error || 'ログインの確認に失敗しました');
       S.session = r.session; S.user = { email: r.email, name: r.email.split('@')[0] };
       return gfetch('https://www.googleapis.com/oauth2/v3/userinfo').then(function (u) { if (u && (u.name || u.given_name)) S.user.name = u.name || u.given_name; }).catch(function () {});
@@ -145,8 +175,25 @@
         try { history.replaceState(null, '', location.pathname + (DEMO ? '?demo=1' : '')); } catch (e) {}
         openMy(); toast('「選び直す」を押して、保存先のフォルダを選んでください');
       }
-    }).catch(function (e) { box.textContent = errText(e); box.hidden = false; }).then(function () { btn.disabled = false; });
-  });
+    });
+  }
+  // 画面ごと移る方式で、Googleから戻ってきたとき（住所の # の後ろにトークンが付いて戻る）
+  (function () {
+    var h = location.hash || '';
+    if (!/(^|[#&])(access_token|error)=/.test(h)) return;
+    var p = new URLSearchParams(h.replace(/^#/, ''));
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+    var saved = null; try { saved = sessionStorage.getItem('receipt_oauth_state'); sessionStorage.removeItem('receipt_oauth_state'); } catch (e) {}
+    var box = $('#loginError'), fail = function (msg) { box.textContent = msg; box.hidden = false; };
+    if (p.get('error')) { fail('ログインできませんでした（' + p.get('error') + '）'); return; }
+    if (saved && p.get('state') !== saved) { fail('ログインの確認に失敗しました。もう一度「Googleでログイン」を押してください'); return; }
+    S.google.token = p.get('access_token') || ''; S.google.exp = Date.now() + (Number(p.get('expires_in')) || 3600) * 1000;
+    if (!S.google.token) return;
+    $('#btnLogin').disabled = true;
+    setTimeout(function () {
+      finishLogin(S.google.token).catch(function (e) { fail(errText(e)); }).then(function () { $('#btnLogin').disabled = false; });
+    }, 0);
+  })();
   function logout() {
     if (!canLeave()) return;
     if (window.google && google.accounts && google.accounts.oauth2 && S.google.token && !DEMO) { try { google.accounts.oauth2.revoke(S.google.token, function () {}); } catch (e) {} }
@@ -163,12 +210,16 @@
       method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, redirect: 'follow',
       body: JSON.stringify(Object.assign({ action: action, session: S.session }, payload || {}))
     }).then(function (res) { return res.text(); }).then(function (t) {
-      var j; try { j = JSON.parse(t); } catch (e) { throw new Error('裏側APIの返事を読めませんでした'); }
+      var j; try { j = JSON.parse(t); } catch (e) {
+        // 何が返ってきたかを添える（例：Googleのエラーページの題名）。次に起きたときの手がかりにする
+        var m = String(t).match(/<title>([^<]{1,60})<\/title>/i), what = m ? m[1] : String(t).replace(/\s+/g, ' ').slice(0, 40);
+        throw new Error('裏側APIの返事を読めませんでした（' + (what || '空の返事') + '）');
+      }
       j.ms = Date.now() - t0;
       if (j.code === 401 && action !== 'login') throw new Error('ログインの期限が切れました。メニューからログアウトして、もう一度ログインしてください');
       return j;
     }).catch(function (e) {
-      if (retried || action === 'login' || /ログインの期限/.test(errText(e))) throw e;
+      if (retried || /ログインの期限/.test(errText(e))) throw e;   // ログインの確認も含めて、1回だけやり直す
       return sleep(3000).then(function () { return api(action, payload, true); });
     });
   }

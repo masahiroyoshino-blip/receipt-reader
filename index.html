@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.2.2">
+<link rel="stylesheet" href="style.css?v=1.2.4">
 </head>
 <body>
 
@@ -34,7 +34,8 @@
         Googleでログイン
       </button>
       <p class="note center">会社のGoogleアカウント（@<span id="domainLabel">replayce.co.jp</span>）で入ってください</p>
-      <div id="inAppWarn" class="notice" hidden>アプリの中のブラウザで開いています。このままではログインできません。メニューから「ブラウザで開く」を選ぶか、URLをSafari（PCはChrome）に貼ってください。</div>
+      <button type="button" class="link-btn" id="btnLoginRedirect">ログイン画面が真っ黒・開かないときはこちら</button>
+      <div id="inAppWarn" class="notice" hidden>アプリの中のブラウザで開いています。このままではログインできません。メニューから「ブラウザで開く」を選ぶか、URLをSafari（AndroidとPCはChrome）に貼ってください。</div>
       <div id="loginError" class="error-box" hidden></div>
       <p class="safe">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2D53A0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
@@ -387,8 +388,8 @@
 <input type="file" id="fileMulti" accept="image/*,application/pdf" multiple hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.2.2"></script>
+<script src="config.js?v=1.2.4"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.2.2"></script>
+<script src="app.js?v=1.2.4"></script>
 </body>
 </html>
