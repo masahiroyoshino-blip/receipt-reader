@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.6';
+  var VERSION = '1.2.7';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -320,6 +320,31 @@
   $('#pickTryHere').addEventListener('click', function () { closePickDlg(); pickFolder(); });
   $$('[data-action="pick-close"]').forEach(function (b) { b.addEventListener('click', closePickDlg); });
 
+  /**
+   * 保存先フォルダをマイドライブに新しく作って、そのまま設定する（初めての人向け。Googleのフォルダ選択画面を使わない）。
+   * 同じ名前のフォルダをこのアプリで作ってあれば、それを使う（二重に作らない）。
+   */
+  function makeFolder() {
+    var name = window.prompt('マイドライブに作るフォルダの名前です。そのままでよければ「OK」を押してください。', '立替精算（領収書）');
+    if (name === null) return Promise.resolve(false);
+    name = safeName(name) || '立替精算（領収書）';
+    if (DEMO) { S.settings.folder = { id: 'demo', name: name }; toast('マイドライブに「' + name + '」を作って、保存先にしました'); if (S.screen === 'mypage') openMy(); else if (S.screen === 'home') goHome(); return Promise.resolve(true); }
+    return ensureToken().then(function () {
+      return listChildren('root', "mimeType='application/vnd.google-apps.folder' and name='" + qName(name) + "'");
+    }).then(function (list) { return list[0] || createFolder(name, 'root'); }).then(function (f) {
+      S.settings.folder = { id: f.id, name: f.name, driveId: '' }; S.ledgers = {};
+      return saveSettings().then(function () {
+        toast('マイドライブに「' + f.name + '」を用意して、保存先にしました');
+        if (S.screen === 'home') goHome(); else if (S.screen === 'mypage') openMy(); else updatePreview();
+        return true;
+      });
+    }).catch(function (e) { toast('フォルダを作れませんでした：' + errText(e), true); return false; });
+  }
+  /** 保存しようとしたのに保存先が無いとき：新しく作るか、今あるフォルダを選ぶか */
+  function chooseFolder() {
+    if (window.confirm('保存先のフォルダがまだ決まっていません。\n\nマイドライブに新しく作るなら「OK」\n今あるフォルダを選ぶなら「キャンセル」を押してください。')) return makeFolder();
+    return pickFolder();
+  }
   function pickFolder() {
     if (DEMO) { S.settings.folder = { id: 'demo', name: '稼働（見本）' }; toast('保存先を「稼働（見本）」にしました'); if (S.screen === 'mypage') openMy(); else goHome(); return Promise.resolve(); }
     if (!CFG.pickerApiKey || /ここに/.test(CFG.pickerApiKey)) { toast('フォルダ選択の設定（config.js の pickerApiKey）が未記入です。管理者に連絡してください', true); return Promise.resolve(); }
@@ -331,7 +356,7 @@
         var P = google.picker;
         var mine = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder');
         var shared = new P.DocsView(P.ViewId.FOLDERS).setIncludeFolders(true).setSelectFolderEnabled(true).setMimeTypes('application/vnd.google-apps.folder').setEnableDrives(true);
-        var b = new P.PickerBuilder().setTitle('「○年○月稼働」フォルダが並んでいるフォルダを選んでください').addView(mine).addView(shared)
+        var b = new P.PickerBuilder().setTitle('保存先のフォルダを選んでください（月のフォルダはこの中に自動で作られます）').addView(mine).addView(shared)
           .setOAuthToken(S.google.token).setDeveloperKey(CFG.pickerApiKey).setAppId(String(CFG.clientId).split('-')[0]).setLocale('ja')
           .setCallback(function (data) {
             var act = data[P.Response.ACTION];
@@ -565,6 +590,7 @@
   $$('[data-action="shoot"], [data-action="reshoot"]').forEach(function (b) { b.addEventListener('click', function () { if (b.dataset.action === 'shoot' && S.screen === 'confirm' && !canLeave()) return; $('#fileShoot').value = ''; $('#fileShoot').click(); }); });
   $$('[data-action="pick-file"]').forEach(function (b) { b.addEventListener('click', function () { $('#filePick').value = ''; $('#filePick').click(); }); });
   $$('[data-action="pick-folder"]').forEach(function (b) { b.addEventListener('click', pickFolder); });
+  $$('[data-action="make-folder"]').forEach(function (b) { b.addEventListener('click', function () { makeFolder(); }); });
   $$('[data-action="home"]').forEach(function (b) { b.addEventListener('click', function () { goHome(); }); });
   $('#monthPrev').addEventListener('click', function () { moveMonth(-1); });
   $('#monthNext').addEventListener('click', function () { moveMonth(1); });
@@ -722,7 +748,7 @@
   $('#btnSave').addEventListener('click', async function () {
     var f = form(); if (!ready(f) || !S.cur || S.cur.saving) return;
     if (duplicates(f).length && !confirm('同じ立替日・金額の申請が、台帳に既にあります。\n同じ領収書を2回送っていませんか？\n\n別の支払いなら「OK」、取りやめるなら「キャンセル」を押してください。')) return;
-    if (!S.settings.folder) { toast('最初に保存先フォルダを選んでください'); await pickFolder(); if (!S.settings.folder) return; }
+    if (!S.settings.folder) { await chooseFolder(); if (!S.settings.folder) return; }
     S.cur.saving = true; updatePreview(); $('#saveNote').textContent = '保存しています…';
     try {
       await ensureToken();
@@ -927,7 +953,7 @@
       todo = todo.filter(function (it) { return dups.indexOf(it) < 0; });
       if (!todo.length) return;
     }
-    if (!S.settings.folder) { toast('最初に保存先フォルダを選んでください'); await pickFolder(); if (!S.settings.folder) return; }
+    if (!S.settings.folder) { await chooseFolder(); if (!S.settings.folder) return; }
     M.saving = true; renderMulti();
     var ok = 0, ng = 0, gen = M.gen;
     try { await ensureToken(); } catch (e) { M.saving = false; renderMulti(); toast(errText(e), true); return; }
@@ -1084,7 +1110,7 @@
   function openMy() {
     show('mypage');
     $('#myName').textContent = S.user ? S.user.name : ''; $('#myEmail').textContent = S.user ? S.user.email : ''; $('#myInitial').textContent = S.user ? S.user.name.slice(0, 1) : '?';
-    $('#myFolder').textContent = S.settings.folder ? S.settings.folder.name : '未設定（最初に選んでください）';
+    $('#myFolder').textContent = S.settings.folder ? S.settings.folder.name : '未設定';
     $$('input[name="split"]').forEach(function (r) { r.checked = r.value === (S.settings.split || 'standard'); });
     renderFavs();
   }

@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.2.6">
+<link rel="stylesheet" href="style.css?v=1.2.7">
 </head>
 <body>
 
@@ -72,9 +72,11 @@
     </div>
 
     <section class="card setup" id="folderSetup" hidden>
-      <h2>はじめに：保存先フォルダを選んでください</h2>
-      <p class="note">毎月の「○年○月稼働」フォルダが並んでいるフォルダを選びます。領収書はその中の月のフォルダに、台帳（立替金精算台帳）はこのフォルダの直下に作られます。</p>
-      <button type="button" class="btn btn-primary" data-action="pick-folder">保存先フォルダを選ぶ</button>
+      <h2>はじめに：保存先を決めてください</h2>
+      <p class="note">領収書と台帳（立替金精算台帳）をしまうフォルダを1つ決めます。この中に「2026年10月稼働」のような月のフォルダが、保存するたびに自動で作られます。</p>
+      <button type="button" class="btn btn-primary" data-action="make-folder">新しく作る（初めての方）</button>
+      <button type="button" class="btn btn-outline" data-action="pick-folder">今あるフォルダを選ぶ</button>
+      <p class="hint">すでに「○年○月稼働」フォルダを使っている方は、「今あるフォルダを選ぶ」で、それが並んでいるフォルダを選んでください。</p>
     </section>
 
     <section class="card summary" aria-label="未申請のまとめ">
@@ -278,8 +280,9 @@
 
     <section class="card pad col" aria-label="保存のしかた">
       <h2 class="h2s">保存のしかた</h2>
-      <div class="col tight"><span class="small">保存先フォルダ（「○年○月稼働」フォルダが並んでいる場所）</span>
+      <div class="col tight"><span class="small">保存先フォルダ（この中に月のフォルダと台帳が作られます）</span>
         <div class="row-line"><b id="myFolder" class="grow break">未設定</b><button type="button" class="btn btn-sm btn-outline" data-action="pick-folder">選び直す</button></div>
+        <button type="button" class="link-btn" data-action="make-folder">マイドライブに新しく作る</button>
       </div>
       <fieldset class="radios"><legend class="small">フォルダの分け方</legend>
         <label><input type="radio" name="split" value="standard"> 月の稼働フォルダ ＋「経費領収書：日付_案件名」フォルダ（標準）</label>
@@ -388,8 +391,8 @@
 <input type="file" id="fileMulti" accept="image/*,application/pdf" multiple hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.2.6"></script>
+<script src="config.js?v=1.2.7"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.2.6"></script>
+<script src="app.js?v=1.2.7"></script>
 </body>
 </html>
