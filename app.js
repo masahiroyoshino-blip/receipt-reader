@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.2.7';
+  var VERSION = '1.3.0';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -204,7 +204,7 @@
 
   // ============================================================ 裏側API（GAS）・Google API
   /** 通信そのものの失敗（Failed to fetch／返事が読めない）は、3秒あけて1回だけやり直す */
-  function api(action, payload, retried) {
+  function api(action, payload, retried, trace) {
     if (DEMO) return demoApi(action, payload);
     var t0 = Date.now(), ctl = null, timer = null, timedOut = false;
     if (action === 'read' && window.AbortController) {
@@ -226,9 +226,10 @@
       return j;
     }).catch(function (e) {
       clearTimeout(timer);
-      if (timedOut) throw new Error(READ_TIMEOUT_SEC + '秒たってもAIから返事がないので止めました。「もう一度読み取る」で再挑戦できます');
+      if (timedOut) { if (trace) trace.timedOut = true; throw new Error(READ_TIMEOUT_SEC + '秒たってもAIから返事がないので止めました。「もう一度読み取る」で再挑戦できます'); }
       if (retried || /ログインの期限/.test(errText(e))) throw e;   // ログインの確認も含めて、1回だけやり直す
-      return sleep(3000).then(function () { return api(action, payload, true); });
+      if (trace) trace.netRetries = (trace.netRetries || 0) + 1;
+      return sleep(3000).then(function () { return api(action, payload, true, trace); });
     });
   }
   function gfetch(url, opts) {
@@ -613,6 +614,33 @@
   }
   function toBase64(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = rej; r.readAsDataURL(blob); }); }
 
+  // ============================================================ 読み取りの計測（改修計画 Phase 0「計る」）
+  // 読み取り1回ごとに ID を付け、画面で測った時間と、受け取れた裏側の返事を、終わったあとで裏側の「読み取りログ」に送る。
+  // 領収書の中身（社名・金額・日付・案件名）は送らない。送れなくても読み取りには影響させない。
+  function deviceLabel() {
+    var ua = navigator.userAgent;
+    return (/iPhone|iPad|iPod/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : 'PC') + (IOS_APP ? '（ホーム画面）' : '');
+  }
+  function newTrace(source, file, blob, prepareMs) {
+    return {
+      readId: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      app: VERSION, device: deviceLabel(), source: source || '', type: file && file.type === 'application/pdf' ? 'PDF' : '画像',
+      origKB: file ? Math.round(file.size / 1024) : '', sentKB: blob ? Math.round(blob.size / 1024) : '',
+      prepareSec: prepareMs != null ? Math.round(prepareMs / 100) / 10 : '', netRetries: 0, timedOut: false
+    };
+  }
+  function sendReadLog(trace, r, waitMs) {
+    if (DEMO || !trace) return;
+    trace.waitSec = Math.round(waitMs / 100) / 10;
+    trace.outcome = r && r.ok && r.result ? '成功' : trace.timedOut ? '打ち切り（' + READ_TIMEOUT_SEC + '秒）'
+      : /返事を読めません|Failed to fetch|Load failed|NetworkError|network/i.test(String(r && r.error || '')) ? '通信エラー'
+      : '失敗' + (r && r.code ? '（' + r.code + '）' : '');
+    var sv = r && r.attempts ? { ok: !!r.ok, code: r.code, model: r.model, mimeType: r.mimeType, bytes: r.bytes, serverMs: r.serverMs,
+      attempts: r.attempts, usage: r.usage || null, unreadable: (r.result && r.result.unreadable) || [], error: r.ok ? '' : String(r.error || '').slice(0, 200) } : null;
+    var t = {}; ['app', 'device', 'source', 'type', 'origKB', 'sentKB', 'prepareSec', 'waitSec', 'outcome', 'netRetries'].forEach(function (k) { t[k] = trace[k]; });
+    api('readlog', { readId: trace.readId, trace: t, server: sv }).catch(function () {});
+  }
+
   // ============================================================ 2 読み取り・確認
   var F = { date: '#fDate', amount: '#fAmount', vendor: '#fVendor', purpose: '#fPurpose', project: '#fProject', pay: '#fPay', invoice: '#fInvoice' };
   function fv(k) { return $(F[k]).value.trim(); }
@@ -628,7 +656,8 @@
     $('#thumbPdf').hidden = !isPdf; $('#thumbImg').hidden = isPdf;
     S.cur.url = URL.createObjectURL(file); if (!isPdf) $('#thumbImg').src = S.cur.url;
     show('confirm'); renderCandidates(); updatePreview();
-    prepare(file).then(function (p) { S.cur.blob = p.blob; S.cur.mime = p.mime; return read(); })
+    var tPrep = Date.now();
+    prepare(file).then(function (p) { S.cur.blob = p.blob; S.cur.mime = p.mime; S.cur.prepareMs = Date.now() - tPrep; return read(); })
       .catch(function (e) { setStatus2('ng', '写真を開けませんでした', errText(e)); });
   }
   $('#thumbBtn').addEventListener('click', function () { if (S.cur && S.cur.url) window.open(S.cur.url, '_blank'); });
@@ -638,16 +667,17 @@
     $('#btnRetryRead').hidden = kind !== 'ng';
     $$('#fDate, #fAmount, #fVendor, #fPurpose').forEach(function (el) { el.classList.toggle('loading', kind === 'busy'); });
   }
-  $('#btnRetryRead').addEventListener('click', function () { if (S.cur && S.cur.blob) read(); });
+  $('#btnRetryRead').addEventListener('click', function () { if (S.cur && S.cur.blob) read(true); });
 
-  async function read() {
+  async function read(again) {
     var seq = S.readSeq, b64 = await toBase64(S.cur.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
       var tStart = Date.now(), msg = function () { setStatus2('busy', '読み取り中… ' + Math.round((Date.now() - tStart) / 1000) + '秒', 'ふつう5〜10秒で終わります（' + READ_TIMEOUT_SEC + '秒で打ち切ります）。待たずに手で入れても構いません。'); };
       msg(); var timer = setInterval(function () { if (seq === S.readSeq) msg(); }, 1000);
-      var r;
-      try { r = await api('read', { file: b64, mimeType: S.cur.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
+      var r, trace = newTrace(again ? 'もう一度' : (S.cur.stats && S.cur.stats.source), S.cur.file, S.cur.blob, again ? null : S.cur.prepareMs), tCall = Date.now();
+      try { r = await api('read', { file: b64, mimeType: S.cur.mime, readId: trace.readId }, false, trace); } catch (e) { r = { ok: false, error: errText(e) }; }
       clearInterval(timer);
+      sendReadLog(trace, r, Date.now() - tCall);
       if (seq !== S.readSeq) return;
       S.cur.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
       if (r.ok && r.result) { S.cur.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; S.cur.stats.model = r.model || ''; fillFromAi(r.result); return; }
@@ -822,14 +852,17 @@
   }
   async function readItem(it, gen) {
     it.status = 'reading'; renderMulti();
-    try { var p = await prepare(it.file); it.blob = p.blob; it.mime = p.mime; }
+    var tPrep = Date.now();
+    try { var p = await prepare(it.file); it.blob = p.blob; it.mime = p.mime; it.prepareMs = Date.now() - tPrep; }
     catch (e) { it.status = 'ng'; it.error = errText(e); renderMulti(); return; }
     var b64 = await toBase64(it.blob), t0 = Date.now();
     for (var i = 0; i <= AUTO_RETRY_SEC.length; i++) {
       var r, tStart = Date.now(); it.elapsed = 0;
       var timer = setInterval(function () { if (gen === M.gen) { it.elapsed = Math.round((Date.now() - tStart) / 1000); renderMulti(); } }, 1000);
-      try { r = await api('read', { file: b64, mimeType: it.mime }); } catch (e) { r = { ok: false, error: errText(e) }; }
+      var trace = newTrace('まとめて', it.file, it.blob, it.prepareMs), tCall = Date.now();
+      try { r = await api('read', { file: b64, mimeType: it.mime, readId: trace.readId }, false, trace); } catch (e) { r = { ok: false, error: errText(e) }; }
       clearInterval(timer); it.elapsed = 0;
+      sendReadLog(trace, r, Date.now() - tCall);
       if (gen !== M.gen) return;
       it.stats.retries = i + ((r.tried && r.tried.length > 1) ? r.tried.length - 1 : 0);
       if (r.ok && r.result) { it.stats.readSec = Math.round((Date.now() - t0) / 100) / 10; it.stats.model = r.model || ''; applyAi(it, r.result); renderMulti(); return; }
