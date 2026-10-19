@@ -224,3 +224,16 @@ textarea.input { resize: vertical; line-height: 1.6; }
 .pill.busy { background: #EFEDEE; color: var(--sub); }
 .row-main .miss { color: var(--warn-ink); }
 .multi-edit [data-action="reshoot"], .multi-edit [data-action="pick-file"], .multi-edit #btnSave { display: none !important; }
+
+/* ---- v1.4 案件名・用途の候補（3つまで＋ほかの候補） */
+.chip.more { color: var(--sub); border-color: var(--line-2); font-weight: 400; }
+.hint.learned { color: var(--blue); }
+.hint.learned:empty { display: none; }
+.sheet-list { display: flex; flex-direction: column; max-height: 55vh; overflow-y: auto; border-top: 1px solid var(--line); }
+.sheet-list button { display: flex; align-items: center; gap: 8px; text-align: left; padding: 12px 4px; border: none; border-bottom: 1px solid #EFEDEE; background: none; font-size: 15px; color: var(--ink); cursor: pointer; }
+.sheet-list button span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sheet-list button small { color: var(--sub); flex-shrink: 0; }
+.sheet-list .empty { padding: 16px 4px; color: var(--sub); font-size: 14px; }
+
+/* ---- v1.4 領収書の画像を渡す */
+.img-row { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }

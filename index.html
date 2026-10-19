@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=1.3.1">
+<link rel="stylesheet" href="style.css?v=1.4.0">
 </head>
 <body>
 
@@ -105,7 +105,7 @@
     </button>
     <div class="link-row">
       <button type="button" class="link-btn" data-action="pick-file">写真・PDFを選ぶ</button>
-      <button type="button" class="link-btn" data-action="pick-multi">まとめて読み取る（5枚まで）</button>
+      <button type="button" class="link-btn" data-action="pick-multi">まとめて撮る・選ぶ（5枚まで）</button>
     </div>
   </div>
 </section>
@@ -132,8 +132,13 @@
         <label class="field">立替日<input class="input" type="date" id="fDate"></label>
         <label class="field">金額（税込）<span class="yen"><input class="input num" type="text" inputmode="numeric" id="fAmount" autocomplete="off">円</span></label>
       </div>
-      <label class="field">利用会社<input class="input" type="text" id="fVendor" autocomplete="off"><span class="hint" id="vendorHint">「株式会社」などを付けた正式社名にします（例：株式会社ファミリーマート）</span></label>
-      <label class="field">用途<input class="input" type="text" id="fPurpose" autocomplete="off" placeholder="例：宿泊費用"></label>
+      <label class="field">利用会社<input class="input" type="text" id="fVendor" autocomplete="off"><span class="hint" id="vendorHint">「株式会社」などを付けた正式社名にします（例：株式会社ファミリーマート）</span><span class="hint learned" id="vendorNote"></span></label>
+      <div class="field">
+        <label for="fPurpose">用途</label>
+        <input class="input" type="text" id="fPurpose" autocomplete="off" placeholder="例：宿泊費用">
+        <span class="hint learned" id="purposeNote"></span>
+        <div class="chips" id="purposeCands"></div>
+      </div>
       <div class="field">
         <label for="fProject">対象案件</label>
         <input class="input" type="text" id="fProject" autocomplete="off" placeholder="候補から選ぶか、入力してください">
@@ -159,6 +164,7 @@
   <div class="bottom-bar">
     <p class="note center" id="saveNote"></p>
     <button type="button" class="btn btn-primary btn-lg" id="btnMultiBack" hidden>一覧に戻る</button>
+    <button type="button" class="link-btn" id="btnMultiRemove" hidden>この1枚を一覧から外す</button>
     <button type="button" class="btn btn-primary btn-lg" id="btnSave" disabled>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
       保存する
@@ -172,6 +178,14 @@
     <div class="sec-head"><h1 class="h1s">まとめて読み取り</h1><span class="small" id="mCount"></span></div>
     <p class="note" id="mLead">読み取りが終わった領収書から、タップして内容を確かめられます。黄色の印は確認が必要なものです。</p>
 
+    <section class="card pad col" id="mAdd" aria-label="領収書を追加する">
+      <div class="row-line">
+        <button type="button" class="btn btn-primary grow" data-action="multi-shoot">＋ 撮って追加</button>
+        <button type="button" class="btn btn-outline grow" data-action="multi-pick">＋ 写真・PDF</button>
+      </div>
+      <span class="hint" id="mAddNote"></span>
+    </section>
+
     <section class="card pad col" id="mBulk" aria-label="対象案件をまとめて入れる">
       <h2 class="h2s">対象案件をまとめて入れる</h2>
       <div class="row-line"><input class="input grow" type="text" id="mProject" autocomplete="off" placeholder="候補から選ぶか、入力してください"><button type="button" class="btn btn-sm btn-outline" id="btnMApply">全部に入れる</button></div>
@@ -180,6 +194,7 @@
     </section>
 
     <div class="card list" id="mList"></div>
+    <p class="note center" id="mEmpty" hidden>まだありません。「＋ 撮って追加」で1枚目を撮ってください。</p>
 
     <section class="card pad col" id="mDone" hidden>
       <h2 class="h2s" id="mDoneTitle"></h2>
@@ -228,6 +243,14 @@
         <span id="doneText">台帳を「申請済み」にしました</span>
         <button type="button" class="text-btn" data-action="undo">取り消す</button>
       </div>
+      <div class="img-row col tight" id="imgRow">
+        <span class="small">領収書の画像（Slackに添付するとき）</span>
+        <div class="row-line">
+          <button type="button" class="btn btn-sm btn-outline grow" data-action="img-copy">画像をコピー</button>
+          <button type="button" class="btn btn-sm btn-outline grow" data-action="img-share">画像を保存・共有</button>
+        </div>
+        <span class="hint" id="imgHint">「画像をコピー」のあと、Slackの入力欄で貼り付けると添付されます。Driveを開く必要はありません。</span>
+      </div>
     </section>
 
     <details class="card fb" id="fbCard">
@@ -264,6 +287,10 @@
     <section class="card claim" id="bPreviewCard" aria-label="まとめた申請文">
       <h2 class="h2s">まとめた申請文（日付の古い順）</h2>
       <div class="claim-box" id="bPreview"></div>
+      <div class="img-row col tight">
+        <button type="button" class="btn btn-sm btn-outline" id="btnBatchImgs">選んだ領収書の画像をまとめて保存・共有</button>
+        <span class="hint" id="bImgHint">スマホは共有メニューの「画像を保存」で写真に入ります。Slackで写真から添付してください（PCはダウンロード）。</span>
+      </div>
     </section>
   </main>
   <div class="bottom-bar">
@@ -316,7 +343,7 @@
       <ol class="steps3">
         <li><span>1</span>ホームの「領収書を撮る」で撮影（メールのPDFは「写真・PDFを選ぶ」）</li>
         <li><span>2</span>読み取った内容を確かめて、黄色の欄を直し、対象案件を選んで「保存する」</li>
-        <li><span>3</span>「コピーしてSlackを開く」→ 立替精算チャンネルの自分のスレッドに貼って送信 →「申請済みにする」</li>
+        <li><span>3</span>「コピーしてSlackを開く」→ 立替精算チャンネルの自分のスレッドに貼る → アプリの「画像をコピー」→ 同じ入力欄に貼って送信 →「申請済みにする」</li>
       </ol>
     </section>
     <section class="card pad col">
@@ -324,7 +351,8 @@
       <ul class="tips">
         <li>明るい場所で、領収書1枚だけを画面いっぱいに撮る</li>
         <li>2枚以上を一度に撮らない（いちばん大きい1枚しか読みません）</li>
-        <li>出張などで何枚もあるときは、先にカメラで1枚ずつ撮っておき、ホームの「まとめて読み取る」で写真を選ぶ（5枚まで。対象案件はまとめて入れられます）</li>
+        <li>出張などで何枚もあるときは、ホームの「まとめて撮る・選ぶ」→「＋ 撮って追加」で続けて撮る（5枚まで。撮るたびに裏で読み取りが進み、対象案件はまとめて入れられます）</li>
+        <li>用途と社名は、同じ利用会社で前回使ったものに自動でそろいます。候補は3つまで並び、残りは「ほかの候補」から探せます</li>
         <li>長いレシートは、合計金額と日付が入るように撮る</li>
         <li>読めなかった欄は黄色になります。推測では埋めないので、写真を見て入れてください</li>
       </ul>
@@ -386,13 +414,22 @@
   </div>
 </dialog>
 
+<dialog id="sheetDlg" class="dlg">
+  <div class="col">
+    <div class="row-line"><h2 class="h2s grow" id="sheetTitle"></h2><button type="button" class="btn btn-sm" id="sheetClose">閉じる</button></div>
+    <input class="input" type="search" id="sheetSearch" placeholder="文字で絞り込む" autocomplete="off">
+    <div class="sheet-list" id="sheetList"></div>
+  </div>
+</dialog>
+
 <input type="file" id="fileShoot" accept="image/*" capture="environment" hidden>
 <input type="file" id="filePick" accept="image/*,application/pdf" hidden>
 <input type="file" id="fileMulti" accept="image/*,application/pdf" multiple hidden>
+<input type="file" id="fileMultiShoot" accept="image/*" capture="environment" hidden>
 <div class="toast" id="toast" role="status" hidden></div>
 
-<script src="config.js?v=1.3.1"></script>
+<script src="config.js?v=1.4.0"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=1.3.1"></script>
+<script src="app.js?v=1.4.0"></script>
 </body>
 </html>

@@ -16,7 +16,7 @@
 
   var CFG = window.RECEIPT_CONFIG || {};
   var DEMO = /[?&]demo=1\b/.test(location.search);
-  var VERSION = '1.3.1';
+  var VERSION = '1.4.0';
   var DEFAULT_SETTINGS = { folder: null, split: 'standard', favorites: [] };
   var SCOPES = 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/calendar.readonly';
   var DRIVE = 'https://www.googleapis.com/drive/v3', UPLOAD = 'https://www.googleapis.com/upload/drive/v3', SHEETS = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -33,7 +33,7 @@
 
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var S = { user: null, google: { token: '', exp: 0 }, session: '', settings: Object.assign({}, DEFAULT_SETTINGS), settingsFileId: null, rows: [], ledgers: {}, cur: null, saved: null, screen: 'login', readSeq: 0 };
+  var S = { user: null, google: { token: '', exp: 0 }, session: '', settings: Object.assign({}, DEFAULT_SETTINGS), settingsFileId: null, rows: [], ledgers: {}, cur: null, saved: null, screen: 'login', readSeq: 0, blobCache: {} };
   var lastErrors = [];
   function noteError(where, e) { lastErrors.push({ t: new Date().toISOString(), where: where, msg: String(errText(e)).slice(0, 300) }); if (lastErrors.length > 8) lastErrors.shift(); }
   window.addEventListener('error', function (e) { noteError('画面', e.message); });
@@ -95,7 +95,7 @@
       if (S.multiEdit) storeMultiItem();
       if (M.saving) { toast('保存が終わるまでお待ちください'); return false; }
       if (multiUnsaved().length && !confirm('まとめて読み取った領収書に、まだ保存していないものがあります。破棄して移動しますか？')) return false;
-      endMulti(); $('#btnMultiBack').hidden = true; S.cur = null;
+      endMulti(); $('#btnMultiBack').hidden = true; $('#btnMultiRemove').hidden = true; S.cur = null;
       return true;
     }
     if (S.screen === 'confirm' && S.cur && !S.cur.saved && !confirm('まだ保存していません。この領収書を破棄して移動しますか？')) return false;
@@ -711,11 +711,11 @@
   function form() { return { date: fv('date'), amount: num(fv('amount')), project: fv('project'), vendor: fv('vendor'), purpose: fv('purpose'), pay: fv('pay'), invoice: fv('invoice') }; }
 
   function startConfirm(file, source) {
-    S.readSeq++; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true;
+    S.readSeq++; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true; $('#btnMultiRemove').hidden = true;
     if (S.cur && S.cur.url) URL.revokeObjectURL(S.cur.url);
     S.cur = { file: file, ai: null, saved: false, events: [], stats: { source: source || '', type: file.type === 'application/pdf' ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } };
     Object.keys(F).forEach(function (k) { var el = $(F[k]); if (k !== 'pay') el.value = ''; el.classList.remove('check'); });
-    $('#fPay').value = '不明'; $('#dupWarn').hidden = true; $('#vendorHint').classList.remove('warn');
+    $('#fPay').value = '不明'; $('#dupWarn').hidden = true; $('#vendorHint').classList.remove('warn'); $('#vendorNote').textContent = ''; $('#purposeNote').textContent = '';
     var isPdf = file.type === 'application/pdf';
     $('#thumbPdf').hidden = !isPdf; $('#thumbImg').hidden = isPdf;
     S.cur.url = URL.createObjectURL(file); if (!isPdf) $('#thumbImg').src = S.cur.url;
@@ -752,6 +752,12 @@
     var set = function (k, v) { var el = $(F[k]); if (!el.value && v !== '' && v != null) el.value = v; };
     set('date', x.date); set('amount', x.amount === '' ? '' : yen(x.amount)); set('vendor', x.vendor); set('purpose', x.purposeHint); set('invoice', x.invoiceNumber);
     if (x.paymentMethod) $('#fPay').value = x.paymentMethod;
+    // 過去の申請に同じ利用会社があれば、正式社名と用途を前回にそろえる（手で入れた値は上書きしない）
+    var learned = learnFromHistory(fv('vendor'));
+    if (learned.vendor && fv('vendor') === (x.vendor || '')) { $('#fVendor').value = learned.vendor; S.cur.ai.vendor = learned.vendor; }
+    if (learned.purpose && fv('purpose') === (x.purposeHint || '')) $('#fPurpose').value = learned.purpose;
+    $('#vendorNote').textContent = learned.vendor ? '過去の申請の社名にそろえました（AIの読み取り：' + x.vendor + '）' : '';
+    $('#purposeNote').textContent = learned.purpose ? '前回と同じ用途を入れました' + (x.purposeHint && x.purposeHint !== learned.purpose ? '（AIの読み取り：' + x.purposeHint + '）' : '') : '';
     var un = x.unreadable || [];
     $('#fDate').classList.toggle('check', !fv('date') || un.indexOf('date') >= 0);
     $('#fAmount').classList.toggle('check', !fv('amount') || un.indexOf('amount') >= 0);
@@ -777,22 +783,104 @@
       .then(function (j) { S.cur.events = (j.items || []).map(function (e) { return e.summary; }).filter(Boolean); renderCandidates(); })
       .catch(function () { S.cur.events = []; renderCandidates(); });
   }
-  function renderCandidates() {
-    var seen = {}, list = [];
-    var add = function (s) { s = cleanTitle(s); if (s && !seen[s]) { seen[s] = 1; list.push(s); } };
-    (S.cur && S.cur.events || []).forEach(add);
-    (S.settings.favorites || []).forEach(add);
-    S.rows.slice().sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).forEach(function (r) { add(r.cells[C.project]); });
-    list = list.slice(0, 8);
-    var d = fv('date'), p = d ? parts(d) : null;
-    $('#candNote').textContent = list.length ? (p ? p.m + '月' + p.d + '日の予定と、過去の申請から' : '過去の申請から') : '';
-    var box = $('#candList'); box.innerHTML = '';
-    list.forEach(function (s) {
+  // ---- 案件名・用途の候補（v1.4.0・改修計画 Phase 3）
+  // すぐ見える候補は3つまで。残りは「ほかの候補」から下に出る一覧（検索つき）で選ぶ。履歴の元は台帳（今年分）とよく使う案件名
+  var CHIP_MAX = 3;
+  /** 社名の比べ方：法人格・空白・中黒を除いてそろえる（例：「株式会社ファミリーマート」と「ファミリーマート」を同じとみなす） */
+  function normVendor(v) { return String(v || '').replace(/株式会社|有限会社|合同会社|（株）|\(株\)|㈱|[\s　・･]/g, '').toLowerCase(); }
+  /** 台帳の列の値を「よく使う順（同じ回数なら新しい順）」に並べる */
+  function rankBy(col, filterFn) {
+    var m = {};
+    S.rows.forEach(function (r) {
+      if (filterFn && !filterFn(r)) return;
+      var v = String(r.cells[col] || '').trim(); if (!v) return;
+      var e = m[v] || (m[v] = { v: v, n: 0, at: '' }); e.n++;
+      var at = String(r.cells[C.at] || ''); if (at > e.at) e.at = at;
+    });
+    return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.n - a.n || (b.at > a.at ? 1 : b.at < a.at ? -1 : 0); }).map(function (e) { return e.v; });
+  }
+  /** 重なりを除いた候補の並び。空白・「：」・中黒の違いだけのものは同じとみなし、先に入れた書き方を残す */
+  function uniqList() {
+    var seen = {}, out = [];
+    return { add: function (s) { s = String(s || '').trim(); var k = s.replace(/[\s　:：・･]/g, ''); if (k && !seen[k]) { seen[k] = 1; out.push(s); } }, list: out };
+  }
+  /** 対象案件の候補：同じ日に保存した案件名 → その日の予定 → よく使う案件名 → 過去によく使った順 */
+  function projectCands(date) {
+    var u = uniqList();
+    if (date) S.rows.filter(function (r) { return r.cells[C.date] === date; }).sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).forEach(function (r) { u.add(r.cells[C.project]); });
+    // 予定の題名は、台帳に同じ中身の案件名があればその書き方に置き換える（表記をそろえる）
+    var known = {}; rankBy(C.project).forEach(function (n) { var k = n.replace(/[\s　:：・･]/g, ''); if (!known[k]) known[k] = n; });
+    (S.cur && S.cur.events || []).forEach(function (e) { var t = cleanTitle(e); u.add(known[t.replace(/[\s　:：・･]/g, '')] || t); });
+    (S.settings.favorites || []).forEach(u.add);
+    rankBy(C.project).forEach(u.add);
+    return u.list;
+  }
+  /** 用途の候補：同じ利用会社で使った用途 → 過去によく使った順 */
+  function purposeCands(vendor) {
+    var u = uniqList(), nv = normVendor(vendor);
+    if (nv) rankBy(C.purpose, function (r) { return normVendor(r.cells[C.vendor]) === nv; }).forEach(u.add);
+    rankBy(C.purpose).forEach(u.add);
+    return u.list;
+  }
+  /** 過去の申請から分かること：同じ利用会社の正式社名（AIの読みに法人格が無いとき）と、いちばんよく使った用途 */
+  function learnFromHistory(vendor) {
+    var nv = normVendor(vendor), out = {};
+    if (!nv) return out;
+    var same = S.rows.filter(function (r) { return normVendor(r.cells[C.vendor]) === nv; });
+    if (!same.length) return out;
+    var official = rankBy(C.vendor, function (r) { return normVendor(r.cells[C.vendor]) === nv && LEGAL_RE.test(r.cells[C.vendor]); })[0];
+    if (official && official !== vendor && !LEGAL_RE.test(vendor)) out.vendor = official;
+    var pur = rankBy(C.purpose, function (r) { return normVendor(r.cells[C.vendor]) === nv; })[0];
+    if (pur) out.purpose = pur;
+    return out;
+  }
+  /** 候補のチップ（3つまで＋「ほかの候補」） */
+  function renderChips(box, list, current, onPick, title) {
+    box.innerHTML = '';
+    list.slice(0, CHIP_MAX).forEach(function (s) {
       var b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = s; b.title = s;
-      b.setAttribute('aria-pressed', String(fv('project') === s));
-      b.addEventListener('click', function () { $('#fProject').value = s; onFormChange(); });
+      b.setAttribute('aria-pressed', String(current === s));
+      b.addEventListener('click', function () { onPick(s); });
       box.appendChild(b);
     });
+    if (list.length > CHIP_MAX) {
+      var m = document.createElement('button'); m.type = 'button'; m.className = 'chip more'; m.textContent = 'ほかの候補（' + (list.length - CHIP_MAX) + '）';
+      m.addEventListener('click', function () { openSheet(title, list, onPick); });
+      box.appendChild(m);
+    }
+  }
+  /** 下から出る候補の一覧（検索つき） */
+  var sheetState = null;
+  function openSheet(title, list, onPick) {
+    sheetState = { list: list, onPick: onPick };
+    $('#sheetTitle').textContent = title; $('#sheetSearch').value = '';
+    renderSheet();
+    var d = $('#sheetDlg'); if (d.showModal) d.showModal(); else d.setAttribute('open', '');
+  }
+  function closeSheet() { var d = $('#sheetDlg'); if (d.close) d.close(); else d.removeAttribute('open'); }
+  function renderSheet() {
+    var q = $('#sheetSearch').value.trim().toLowerCase(), box = $('#sheetList'); box.innerHTML = '';
+    var hits = sheetState.list.filter(function (s) { return !q || s.toLowerCase().indexOf(q) >= 0; });
+    if (!hits.length) { box.innerHTML = '<div class="empty">見つかりません。入力欄に直接入れてください。</div>'; return; }
+    hits.forEach(function (s) {
+      var b = document.createElement('button'); b.type = 'button'; b.innerHTML = '<span>' + esc(s) + '</span>';
+      b.addEventListener('click', function () { closeSheet(); sheetState.onPick(s); });
+      box.appendChild(b);
+    });
+  }
+  $('#sheetSearch').addEventListener('input', renderSheet);
+  $('#sheetClose').addEventListener('click', closeSheet);
+
+  function renderCandidates() {
+    var d = fv('date'), p = d ? parts(d) : null, list = projectCands(d);
+    $('#candNote').textContent = list.length ? (p ? p.m + '月' + p.d + '日の予定・よく使う案件名・過去の申請から' : 'よく使う案件名・過去の申請から') : '';
+    renderChips($('#candList'), list, fv('project'), function (s) { $('#fProject').value = s; onFormChange(); }, '対象案件を選ぶ');
+    renderPurposeCands();
+  }
+  function renderPurposeCands() {
+    renderChips($('#purposeCands'), purposeCands(fv('vendor')), fv('purpose'), function (s) {
+      $('#fPurpose').value = s; $('#fPurpose').classList.remove('check'); $('#purposeNote').textContent = ''; onFormChange();
+    }, '用途を選ぶ');
   }
 
   function claimText(f) {
@@ -820,10 +908,12 @@
       $('#dupWarn').hidden = false;
     } else $('#dupWarn').hidden = true;
     $$('#candList .chip').forEach(function (b) { b.setAttribute('aria-pressed', String(b.textContent === f.project)); });
+    $$('#purposeCands .chip').forEach(function (b) { b.setAttribute('aria-pressed', String(b.textContent === f.purpose)); });
     updatePreview();
   }
   Object.keys(F).forEach(function (k) { $(F[k]).addEventListener('input', onFormChange); $(F[k]).addEventListener('change', onFormChange); });
-  $('#fVendor').addEventListener('input', checkVendor);
+  $('#fVendor').addEventListener('input', function () { checkVendor(); $('#vendorNote').textContent = ''; renderPurposeCands(); });
+  $('#fPurpose').addEventListener('input', function () { $('#purposeNote').textContent = ''; });
   $('#fDate').addEventListener('change', loadEvents);
   $('#fAmount').addEventListener('blur', function () { var n = num(this.value); this.value = n ? yen(n) : ''; });
   ['#fDate', '#fAmount', '#fPurpose'].forEach(function (s) { $(s).addEventListener('input', function () { if (this.value) this.classList.remove('check'); }); });
@@ -837,6 +927,7 @@
     try {
       await ensureToken();
       S.saved = DEMO ? demoSave(f) : await saveAll(f);
+      keepBlob(S.saved, S.cur.blob, S.cur.mime);
       S.cur.saved = true; openResult();
     } catch (e) { toast('保存できませんでした：' + errText(e), true); }
     S.cur.saving = false; updatePreview();
@@ -882,27 +973,47 @@
   }
   function endMulti() {
     M.gen++; M.items.forEach(function (it) { if (it.url) URL.revokeObjectURL(it.url); });
-    M.items = []; M.saving = false; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit');
+    M.items = []; M.saving = false; M.running = false; M.applied = ''; S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit');
   }
 
-  $$('[data-action="pick-multi"]').forEach(function (b) { b.addEventListener('click', function () { $('#fileMulti').value = ''; $('#fileMulti').click(); }); });
-  $('#fileMulti').addEventListener('change', function () {
-    var files = Array.prototype.slice.call(this.files || []); if (!files.length) return;
-    if (files.length > MULTI_MAX) toast(MULTI_MAX + '枚までです。最初の' + MULTI_MAX + '枚を読み取ります', true);
-    startMulti(files.slice(0, MULTI_MAX));
+  // まとめて読み取り（v1.4.0）：まず空の一覧を開き、「撮って追加」「写真・PDF」で1枚ずつ足す。足したそばから裏で順番に読み取る
+  $$('[data-action="pick-multi"]').forEach(function (b) { b.addEventListener('click', function () { if (canLeave()) openMulti(); }); });
+  $$('[data-action="multi-shoot"]').forEach(function (b) { b.addEventListener('click', function () { $('#fileMultiShoot').value = ''; $('#fileMultiShoot').click(); }); });
+  $$('[data-action="multi-pick"]').forEach(function (b) { b.addEventListener('click', function () { $('#fileMulti').value = ''; $('#fileMulti').click(); }); });
+  ['#fileMulti', '#fileMultiShoot'].forEach(function (sel) {
+    $(sel).addEventListener('change', function () { addMulti(Array.prototype.slice.call(this.files || []), sel === '#fileMultiShoot' ? '撮影' : '選択'); });
   });
-  function startMulti(files) {
+  function openMulti() {
     endMulti();
-    var gen = M.gen;
-    M.items = files.map(function (file) {
-      var isPdf = file.type === 'application/pdf';
-      return { file: file, isPdf: isPdf, url: URL.createObjectURL(file), status: 'wait', wait: 0, error: '', ai: null, saved: null, receiptCount: 1,
-        vals: { date: '', amount: 0, project: '', vendor: '', purpose: '', pay: '不明', invoice: '' }, flags: {},
-        stats: { source: 'まとめて', type: isPdf ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } };
-    });
     $('#mProject').value = ''; renderMultiCands();
     show('multi'); renderMulti();
-    (async function () { for (var i = 0; i < M.items.length; i++) { if (gen !== M.gen) return; await readItem(M.items[i], gen); } })();
+  }
+  function addMulti(files, how) {
+    if (!files.length) return;
+    var room = MULTI_MAX - M.items.length;
+    if (room <= 0) { toast('1回に読み取れるのは' + MULTI_MAX + '枚までです', true); return; }
+    if (files.length > room) toast(MULTI_MAX + '枚までです。最初の' + room + '枚を追加しました', true);
+    files.slice(0, room).forEach(function (file) {
+      var isPdf = file.type === 'application/pdf';
+      M.items.push({ file: file, isPdf: isPdf, url: URL.createObjectURL(file), status: 'wait', error: '', ai: null, saved: null, receiptCount: 1,
+        vals: { date: '', amount: 0, project: $('#mProject').value.trim() && M.applied ? M.applied : '', vendor: '', purpose: '', pay: '不明', invoice: '' }, flags: {},
+        stats: { source: 'まとめて（' + how + '）', type: isPdf ? 'PDF' : '画像', readSec: '', retries: 0, model: '' } });
+    });
+    renderMulti();
+    runMultiQueue();
+  }
+  /** 「順番待ち」の1枚を、1枚ずつ読み取る（同時に読むのは1枚。追いかけ読み取りが付いても最大2つ） */
+  async function runMultiQueue() {
+    if (M.running) return;
+    M.running = true;
+    var gen = M.gen;
+    try {
+      while (gen === M.gen) {
+        var next = M.items.filter(function (it) { return it.status === 'wait'; })[0];
+        if (!next) break;
+        await readItem(next, gen);
+      }
+    } finally { if (gen === M.gen) M.running = false; }
   }
   async function readItem(it, gen) {
     it.status = 'reading'; renderMulti();
@@ -928,14 +1039,20 @@
     if (!v.date) v.date = x.date || ''; if (!v.amount) v.amount = num(x.amount); if (!v.vendor) v.vendor = x.vendor || '';
     if (!v.purpose) v.purpose = x.purposeHint || ''; if (!v.invoice) v.invoice = x.invoiceNumber || '';
     if (x.paymentMethod) v.pay = x.paymentMethod;
+    var learned = learnFromHistory(v.vendor);
+    if (learned.vendor && v.vendor === (x.vendor || '')) { v.vendor = learned.vendor; it.ai.vendor = learned.vendor; }
+    if (learned.purpose && v.purpose === (x.purposeHint || '')) v.purpose = learned.purpose;
     it.receiptCount = x.receiptCount || 1; it.flags = multiFlags(v, x); it.status = 'ok';
   }
 
   function renderMulti() {
-    if (!M.items.length) return;
+    var n = M.items.length, room = MULTI_MAX - n;
+    $('#mEmpty').hidden = n > 0; $('#mList').hidden = !n;
+    $('#mAdd').hidden = room <= 0 || M.saving;
+    $('#mAddNote').textContent = n ? '撮るたびに裏で読み取りが進みます。続けて次を撮れます（あと' + room + '枚）。' : '1枚撮るごとに裏で読み取りが進みます。最大' + MULTI_MAX + '枚まで続けて撮れます。';
     var done = M.items.filter(function (it) { return it.status === 'ok' || it.status === 'ng' || it.status === 'saved'; }).length;
     var saved = M.items.filter(function (it) { return it.status === 'saved'; }).length;
-    $('#mCount').textContent = done < M.items.length ? M.items.length + '枚中 ' + done + '枚 読み取り済み' : M.items.length + '枚';
+    $('#mCount').textContent = done < n ? n + '枚中 ' + done + '枚 読み取り済み' : n + '枚';
     var box = $('#mList'); box.innerHTML = '';
     M.items.forEach(function (it, idx) {
       var v = it.vals, p = v.date ? parts(v.date) : null, busy = it.status === 'wait' || it.status === 'reading' || it.status === 'saving';
@@ -961,8 +1078,8 @@
     });
     var left = multiUnsaved(), readyN = left.filter(function (it) { return it.status === 'ok' || it.status === 'ng'; }).filter(function (it) { return ready(it.vals); }).length;
     var reading = M.items.some(function (it) { return it.status === 'wait' || it.status === 'reading'; });
-    var allSaved = !left.length;
-    $('#mBulk').hidden = allSaved; $('#mLead').hidden = allSaved;
+    var allSaved = n > 0 && !left.length;
+    $('#mBulk').hidden = allSaved || !n; $('#mLead').hidden = allSaved || !n;
     $('#mDone').hidden = !saved; $('#mDoneTitle').textContent = saved + '枚を保存して、台帳に記録しました';
     $('#btnMSave').hidden = allSaved; $('#btnMToBatch').hidden = !allSaved;
     $('#btnMSave').disabled = M.saving || !readyN;
@@ -970,27 +1087,20 @@
     var notReady = left.filter(function (it) { return (it.status === 'ok' || it.status === 'ng') && !ready(it.vals); }).length;
     $('#mNote').textContent = allSaved ? '' : reading ? '読み取りが終わったものから確かめられます' :
       notReady ? notReady + '枚は入力が足りません（対象案件など）。タップして入れてください' : '';
-    $('#btnMHome').textContent = allSaved ? 'ホームへ戻る' : 'やめてホームへ戻る';
+    $('#btnMHome').textContent = allSaved || !n ? 'ホームへ戻る' : 'やめてホームへ戻る';
   }
 
   // 対象案件をまとめて入れる
   function renderMultiCands() {
-    var seen = {}, list = [];
-    var add = function (s) { s = cleanTitle(s); if (s && !seen[s]) { seen[s] = 1; list.push(s); } };
-    (S.settings.favorites || []).forEach(add);
-    S.rows.slice().sort(function (a, b) { return String(b.cells[C.at]).localeCompare(String(a.cells[C.at])); }).forEach(function (r) { add(r.cells[C.project]); });
-    var box = $('#mCands'); box.innerHTML = '';
-    list.slice(0, 8).forEach(function (s) {
-      var b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = s; b.title = s;
-      b.setAttribute('aria-pressed', String($('#mProject').value.trim() === s));
-      b.addEventListener('click', function () { $('#mProject').value = s; renderMultiCands(); });
-      box.appendChild(b);
-    });
+    var u = uniqList();
+    (S.settings.favorites || []).forEach(u.add);
+    rankBy(C.project).forEach(u.add);
+    renderChips($('#mCands'), u.list, $('#mProject').value.trim(), function (s) { $('#mProject').value = s; renderMultiCands(); }, '対象案件を選ぶ');
   }
   $('#mProject').addEventListener('input', function () { $$('#mCands .chip').forEach(function (b) { b.setAttribute('aria-pressed', String(b.textContent === $('#mProject').value.trim())); }); });
   $('#btnMApply').addEventListener('click', function () {
     var s = $('#mProject').value.trim(); if (!s) { toast('案件名を選ぶか入力してください', true); return; }
-    var n = 0; multiUnsaved().forEach(function (it) { if (it.status !== 'saving') { it.vals.project = s; n++; } });
+    var n = 0; M.applied = s; multiUnsaved().forEach(function (it) { if (it.status !== 'saving') { it.vals.project = s; n++; } });
     renderMulti(); toast(n + '枚の対象案件を「' + s + '」にしました');
   });
 
@@ -1007,7 +1117,7 @@
     var fl = it.flags || {};
     $('#fDate').classList.toggle('check', !!fl.date); $('#fAmount').classList.toggle('check', !!fl.amount); $('#fPurpose').classList.toggle('check', !!fl.purpose);
     $('#thumbPdf').hidden = !it.isPdf; $('#thumbImg').hidden = it.isPdf; if (!it.isPdf) $('#thumbImg').src = it.url;
-    $('#btnMultiBack').hidden = false;
+    $('#btnMultiBack').hidden = false; $('#btnMultiRemove').hidden = false; $('#vendorNote').textContent = ''; $('#purposeNote').textContent = '';
     show('confirm');
     if (it.status === 'ng') setStatus2('ng', '読み取れませんでした', 'お手数ですが、写真を見ながら手で入れてください。' + (it.error ? '（' + it.error + '）' : ''));
     else setStatus2('ok', (idx + 1) + '枚目', it.receiptCount > 1 ? '写真に' + it.receiptCount + '枚写っています。1枚ずつ読み取ると確実です。' : '黄色の欄はAIが自信のない項目です。写真と見比べてください。');
@@ -1021,8 +1131,16 @@
     if (it.ai && it.status === 'ng') it.status = 'ok';   // 確認画面で「もう一度読み取る」が成功した
     it.saveError = '';
   }
+  $('#btnMultiRemove').addEventListener('click', function () {
+    var it = S.cur; if (!S.multiEdit || !it) return;
+    if (!confirm('この1枚を一覧から外しますか？（保存はされません）')) return;
+    var i = M.items.indexOf(it);
+    if (i >= 0) { if (it.url) URL.revokeObjectURL(it.url); M.items.splice(i, 1); }
+    S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true; $('#btnMultiRemove').hidden = true;
+    S.readSeq++; S.cur = null; show('multi'); renderMulti(); toast('一覧から外しました');
+  });
   $('#btnMultiBack').addEventListener('click', function () {
-    storeMultiItem(); S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true;
+    storeMultiItem(); S.multiEdit = false; $('[data-screen="confirm"]').classList.remove('multi-edit'); $('#btnMultiBack').hidden = true; $('#btnMultiRemove').hidden = true;
     S.readSeq++; S.cur = null; show('multi'); renderMulti();
   });
 
@@ -1046,6 +1164,7 @@
       try {
         S.cur = it;   // 保存の処理は S.cur の画像・形式を使う
         it.saved = DEMO ? demoSave(it.vals) : await saveAll(it.vals);
+        keepBlob(it.saved, it.blob, it.mime);
         it.status = 'saved'; it.saveError = ''; ok++;
       } catch (e) { it.status = 'ok'; it.saveError = errText(e); ng++; noteError('まとめて保存', e); }
       S.cur = null; renderMulti();
@@ -1056,6 +1175,90 @@
     window.scrollTo(0, 0);
   });
   $('#btnMHome').addEventListener('click', function () { if (canLeave()) goHome(); });
+
+  // ============================================================ 領収書の画像を渡す（v1.4.0・改修計画 Phase 4）
+  // Slackに添付するとき、Driveからダウンロードしなくて済むようにする。A：画像をコピー（入力欄に貼ると添付）／B：保存・共有（写真アプリへ・PCはダウンロード）
+  function driveIdFromUrl(u) { var m = String(u || '').match(/\/d\/([\w-]+)/) || String(u || '').match(/[?&]id=([\w-]+)/); return m ? m[1] : ''; }
+  function isPdfSaved(s) { return s.mime === 'application/pdf' || /\.pdf$/i.test(s.fileName || ''); }
+  /** いま保存した画像を手元に残す（あとで同じ領収書を開いても、Driveから読み直さない） */
+  function keepBlob(saved, blob, mime) {
+    if (!saved || !blob) return;
+    saved.blob = blob; saved.mime = mime || blob.type;
+    var id = driveIdFromUrl(saved.fileUrl); if (id) S.blobCache[id] = blob;
+  }
+  /** 領収書の画像（またはPDF）を取り出す。手元に無ければDriveから読む（アプリが作ったファイルなので読める） */
+  function receiptBlob(s) {
+    if (s.blob) return Promise.resolve(s.blob);
+    var id = driveIdFromUrl(s.fileUrl);
+    if (id && S.blobCache[id]) return Promise.resolve(s.blob = S.blobCache[id]);
+    if (DEMO) return demoReceiptBlob().then(function (b) { return (s.blob = b); });
+    if (!id) return Promise.reject(new Error('画像の場所が分かりません'));
+    return ensureToken().then(function () {
+      return fetch(DRIVE + '/files/' + id + '?alt=media&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + S.google.token } });
+    }).then(function (res) {
+      if (!res.ok) throw new Error('画像を読み込めませんでした（' + res.status + '）');
+      return res.blob();
+    }).then(function (b) { S.blobCache[id] = b; return (s.blob = b); });
+  }
+  function toPng(blob) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(blob), img = new Image();
+      img.onload = function () {
+        var c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0); URL.revokeObjectURL(url);
+        c.toBlob(function (b) { b ? resolve(b) : reject(new Error('画像を変換できませんでした')); }, 'image/png');
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('画像を開けませんでした')); };
+      img.src = url;
+    });
+  }
+  /** A：画像をコピー。ボタンを押した流れの中でクリップボードに書く（画像の準備は待ちながら書ける形にする） */
+  function copyImage(s) {
+    if (isPdfSaved(s)) { toast('PDFはコピーできません。「画像を保存・共有」を使ってください', true); return; }
+    if (!(window.ClipboardItem && navigator.clipboard && navigator.clipboard.write)) { toast('この端末では画像をコピーできません。「画像を保存・共有」を使ってください', true); return; }
+    var png = receiptBlob(s).then(toPng);
+    navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+      .then(function () { toast('画像をコピーしました。Slackの入力欄で貼り付けてください'); })
+      .catch(function (e) { toast('画像をコピーできませんでした（' + errText(e) + '）。「画像を保存・共有」を使ってください', true); });
+  }
+  /** B：保存・共有（スマホは共有メニュー、PCはダウンロード）。items：{ fileUrl, fileName, blob?, mime? } の並び */
+  async function shareReceipts(items, btn) {
+    if (!items.length) return;
+    var mobile = /iPhone|iPad|iPod|Android/.test(navigator.userAgent), needFetch = items.some(function (it) { return !it.blob && !S.blobCache[driveIdFromUrl(it.fileUrl)]; });
+    if (btn) btn.disabled = true;
+    try {
+      var files = [];
+      for (var i = 0; i < items.length; i++) {
+        var b = await receiptBlob(items[i]), pdf = isPdfSaved(items[i]) || b.type === 'application/pdf';
+        files.push(new File([b], items[i].fileName || ('領収書' + (i + 1) + (pdf ? '.pdf' : '.jpg')), { type: b.type || (pdf ? 'application/pdf' : 'image/jpeg') }));
+      }
+      if (mobile && navigator.canShare && navigator.canShare({ files: files })) {
+        try { await navigator.share({ files: files }); }
+        catch (e) {
+          if (e && e.name === 'AbortError') return;   // 共有メニューを閉じただけ
+          if (needFetch && e && e.name === 'NotAllowedError') { toast('画像の準備ができました。もう一度押してください'); return; }
+          throw e;
+        }
+      } else {
+        files.forEach(function (f, k) {
+          setTimeout(function () {
+            var a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name;
+            document.body.appendChild(a); a.click();
+            setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+          }, k * 300);
+        });
+        toast(files.length + '件をダウンロードしました。Slackに添付してください');
+      }
+    } catch (e) { toast('画像を渡せませんでした：' + errText(e), true); }
+    finally { if (btn) btn.disabled = false; }
+  }
+  $$('[data-action="img-copy"]').forEach(function (b) { b.addEventListener('click', function () { if (S.saved) copyImage(S.saved); }); });
+  $$('[data-action="img-share"]').forEach(function (b) { b.addEventListener('click', function () { if (S.saved) shareReceipts([S.saved], b); }); });
+  $('#btnBatchImgs').addEventListener('click', function () {
+    var list = batchChosen().map(function (r) { return { fileUrl: r.cells[C.fileUrl], fileName: r.cells[C.fileName] }; });
+    if (!list.length) { toast('領収書が選ばれていません', true); return; }
+    shareReceipts(list, this);
+  });
 
   // ============================================================ 3 保存完了・申請
   function openSaved(r) {
@@ -1289,6 +1492,11 @@
     if (action === 'read') return sleep(1500).then(function () { return { ok: true, model: 'gemini-3.5-flash-lite', result: { receiptCount: 1, docType: 'レシート', date: '2026-09-26', vendor: 'ファミリーマート', amount: 1220, paymentMethod: 'QR決済', invoiceNumber: 'T5180302016192', purposeHint: '菓子購入', unreadable: [] } }; });
     if (action === 'report' || action === 'feedback') return sleep(400).then(function () { return { ok: true }; });
     return Promise.resolve({ ok: false, error: '見本モード' });
+  }
+  function demoReceiptBlob() {
+    var c = document.createElement('canvas'); c.width = 300; c.height = 400;
+    var g = c.getContext('2d'); g.fillStyle = '#fffefa'; g.fillRect(0, 0, 300, 400); g.fillStyle = '#222'; g.font = '20px sans-serif'; g.fillText('領収書（見本）', 70, 60);
+    return new Promise(function (res) { c.toBlob(res, 'image/jpeg', 0.9); });
   }
   function demoSave(f) {
     var p = parts(f.date), id = p.ymd + '-demo-0' + (S.rows.length + 1), claim = claimText(f); S.homeMonth = f.date.slice(0, 7);
